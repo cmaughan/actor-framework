@@ -216,6 +216,8 @@ class basp_broker : public broker, public actor_namespace::backend {
   // dest => hops
   using routing_table = std::map<node_id, routing_table_entry>;
 
+  uint16_t m_default_port;  // broker port for incoming direct connections
+  actor m_slave;  // establishes new direct connections
   actor_namespace m_namespace; // manages proxies
   std::map<connection_handle, connection_context> m_ctx;
   std::map<accept_handle, std::pair<abstract_actor_ptr, uint16_t>> m_acceptors;
@@ -225,6 +227,16 @@ class basp_broker : public broker, public actor_namespace::backend {
                                                          // routes
   // a simple "bag" for our pending requests
   std::vector<pending_request> m_pending_requests;
+
+  // tracks in-flight direct_conn_requests with this map when detecting
+  // that we have no direct route to a remote node, to avoid multiple
+  // connection attempts to the same node
+  // TODO: expire stale state state
+  std::set<node_id> m_inflight_conn_reqs;
+
+  // tracks pending responses after having received a direct_conn_request
+  // TODO: expire stale state state
+  std::map<connection_handle, node_id> m_pending_conn_resps;
 
   // needed to keep track to which node we are talking to at the moment
   connection_context* m_current_context;

@@ -21,6 +21,7 @@
 
 #include "caf/exception.hpp"
 #include "caf/make_counted.hpp"
+#include "caf/event_based_actor.hpp"
 #include "caf/binary_serializer.hpp"
 #include "caf/binary_deserializer.hpp"
 #include "caf/forwarding_actor_proxy.hpp"
@@ -33,12 +34,81 @@
 #include "caf/io/middleman.hpp"
 #include "caf/io/unpublish.hpp"
 
+#include "caf/io/network/interfaces.hpp"
+
 using std::string;
 
 namespace caf {
 namespace io {
 
 using detail::singletons;
+
+class connection_slave : public event_based_actor {
+ public:
+  connection_slave(actor master)
+      : m_backend(middleman::instance()->backend()),
+        m_master(master) {
+    // nop
+  }
+
+  ~connection_slave();
+
+  behavior make_behavior() {
+    return {
+      [=](std::vector<std::pair<std::string, std::string>>& addresses,
+          uint16_t port, node_id& src, node_id& target) {
+        while (!addresses.empty() && addresses.back().first != "ipv4") {
+          // TODO: add support for IPv6
+          addresses.pop_back();
+        }
+        if (addresses.empty()) {
+          // failure; tell basp_broker to send direct_conn_response
+          send(m_master, error_atom{}, std::move(src), std::move(target));
+          return;
+        }
+        try {
+          auto hdl = m_backend.new_tcp_scribe(addresses.back().second, port);
+          addresses.pop_back();
+          // we got a connection, await handshake
+          send(m_master, get_atom{}, hdl, int64_t{0},
+               this, std::set<std::string>{});
+          become(
+            keep_behavior,
+            [=](ok_atom ok, int64_t, actor_addr) {
+              // success; tell basp_broker to send direct_conn_response
+              send(m_master, ok, src, target);
+              unbecome();
+            },
+            [=](error_atom, int64_t, const std::string&) {
+              // try next address
+              send(this, addresses, port, src, target);
+              unbecome();
+            }
+          );
+        }
+        catch (...) {
+          // try next address
+          addresses.pop_back();
+          send(this, std::move(addresses), port,
+               std::move(src), std::move(target));
+        }
+      },
+      on(atom("INIT")) >> [=] {
+        auto res = m_backend.new_tcp_doorman(0);
+        send(m_master, res.first, res.second);
+      }
+    };
+  }
+
+ private:
+  network::multiplexer& m_backend;
+  actor m_master;
+};
+
+connection_slave::~connection_slave() {
+  // nop
+}
+
 
 basp_broker::payload_writer::~payload_writer() {
   // nop
@@ -79,6 +149,18 @@ basp_broker::~basp_broker() {
 }
 
 behavior basp_broker::make_behavior() {
+  if (m_slave == invalid_actor) {
+    // wait until slave opened a local port for us
+    m_slave = spawn<connection_slave, detached + hidden + linked>(this);
+    send(m_slave, atom("INIT"));
+    return {
+      [=](accept_handle hdl, uint16_t default_port) {
+        assign_tcp_doorman(hdl);
+        m_default_port = default_port;
+        become(make_behavior()); // this time for real
+      }
+    };
+  }
   return {
     // received from underlying broker implementation
     [=](new_data_msg& msg) {
@@ -94,7 +176,8 @@ behavior basp_broker::make_behavior() {
       ctx.hdl = msg.handle;
       ctx.handshake_data = none;
       ctx.state = await_client_handshake;
-      init_handshake_as_server(ctx, m_acceptors[msg.source].first->address());
+      auto& ptr = m_acceptors[msg.source].first;
+      init_handshake_as_server(ctx, ptr ? ptr->address() : invalid_actor_addr);
     },
     // received from underlying broker implementation
     [=](const connection_closed_msg& msg) {
@@ -169,7 +252,15 @@ behavior basp_broker::make_behavior() {
     [=](put_atom, accept_handle hdl, const actor_addr& whom, uint16_t port) {
       CAF_LOG_TRACE(CAF_ARG(hdl.id()) << ", "<< CAF_TSARG(whom)
                     << ", " << CAF_ARG(port));
-      if (hdl.invalid() || whom == invalid_actor_addr) {
+      if (hdl.invalid()) {
+        return;
+      }
+      if (whom == invalid_actor_addr) {
+        if (current_sender() == m_slave) {
+          // allow only from slave since this remains open until broker exits
+          m_acceptors.insert(std::make_pair(hdl, std::make_pair(nullptr, port)));
+          m_open_ports.insert(std::make_pair(port, hdl));
+        }
         return;
       }
       try {
@@ -226,6 +317,15 @@ behavior basp_broker::make_behavior() {
         }
       }
       return make_message(ok_atom::value, request_id);
+    },
+    // received from connection slave
+    [=](atom_value atm, const node_id& src, const node_id& target) {
+      uint64_t op_data = atm == ok_atom{} ? 1 : 0;
+      auto writer = make_payload_writer([&](binary_serializer& sink) {
+        sink << target;
+      });
+      dispatch(basp::direct_conn_response, node(), invalid_actor_id,
+               src, invalid_actor_id, op_data, &writer);
     },
     // catch-all error handler
     others >> [=] {
@@ -394,6 +494,22 @@ node_id basp_broker::dispatch(uint32_t operation, const node_id& src_node,
                  << CAF_TSARG(dest_node));
     return invalid_node_id;
   }
+  if (route.node != dest_node) {
+    CAF_LOG_DEBUG("no direct route to " << to_string(dest_node));
+    // TODO: use blacklist for failing direct connection attempts?
+    if (m_inflight_conn_reqs.find(dest_node) != m_inflight_conn_reqs.end()) {
+      CAF_LOG_DEBUG("awaiting response to inflight request");
+    } else {
+      CAF_LOG_DEBUG("sending direct connection request");
+      m_inflight_conn_reqs.insert(dest_node);
+      auto dcr_writer = make_payload_writer([&](binary_serializer& sink) {
+        sink.write(node(), m_meta_id_type);
+        sink.write(dest_node, m_meta_id_type);
+      });
+      dispatch(route.hdl, basp::direct_conn_request, node(), 0, dest_node, 0,
+               0, &dcr_writer);
+    }
+  }
   dispatch(route.hdl, operation, src_node, src_actor, dest_node, dest_actor,
            op_data, writer);
   return route.node;
@@ -473,8 +589,8 @@ basp_broker::handle_basp_header(connection_context& ctx,
   if (hdr.dest_node != invalid_node_id && hdr.dest_node != node()) {
     auto route = get_route(hdr.dest_node);
     if (route.invalid()) {
-      CAF_LOG_INFO("cannot forward message: no route to node "
-                   << to_string(hdr.dest_node));
+      CAF_LOG_ERROR("cannot forward message: no route to node "
+                    << to_string(hdr.dest_node));
       parent().notify<hook::message_forwarding_failed>(hdr.source_node,
                                                        hdr.dest_node, payload);
       return close_connection;
@@ -544,6 +660,11 @@ basp_broker::handle_basp_header(connection_context& ctx,
         return close_connection;
       }
       ctx.remote_id = hdr.source_node;
+      auto i = m_inflight_conn_reqs.find(ctx.remote_id);
+      if (i != m_inflight_conn_reqs.end()) {
+        CAF_LOG_DEBUG("incoming connection for direct connection request");
+        m_inflight_conn_reqs.erase(i);
+      }
       if (node() == ctx.remote_id) {
         CAF_LOG_INFO("incoming connection from self");
         return close_connection;
@@ -648,6 +769,59 @@ basp_broker::handle_basp_header(connection_context& ctx,
       parent().notify<hook::new_connection_established>(nid);
       break;
     }
+    case basp::direct_conn_request: {
+      CAF_ASSERT(payload != nullptr);
+      node_id request_origin;
+      node_id target;
+      uint16_t port = 0;
+      std::vector<std::pair<std::string, std::string>> addresses;
+      {
+        binary_deserializer bd{payload->data(), payload->size(), &m_namespace};
+        bd.read(request_origin, m_meta_id_type);
+        bd.read(target, m_meta_id_type);
+        if (hdr.operation_data == 1) {
+          bd >> port;
+          uint32_t num_addresses;
+          bd >> num_addresses;
+          for (uint32_t i = 0; i < num_addresses; ++i) {
+            std::pair<std::string, std::string> address;
+            bd >> address.first >> address.second;
+            addresses.push_back(std::move(address));
+          }
+        }
+      }
+      if (hdr.operation_data == 0) {
+        using network::protocol;
+        port = m_default_port;
+        for (auto& addr : network::interfaces::list_addresses(protocol::ipv4)) {
+          addresses.push_back(std::make_pair("ipv4", std::move(addr)));
+        }
+        auto writer = make_payload_writer([&](binary_serializer& sink) {
+          sink.write(request_origin, m_meta_id_type);
+          sink.write(target, m_meta_id_type);
+          sink << port << static_cast<uint32_t>(addresses.size());
+          for (auto& addr : addresses) {
+            sink << addr.first << addr.second;
+          }
+        });
+        // TODO: send direct_conn_response immediately if we already
+        //       have a direct connection to the target
+        dispatch(basp::direct_conn_request, node(), invalid_actor_id,
+                 target, invalid_actor_id, 1, &writer);
+      } else if (target != node()) {
+        CAF_LOG_ERROR("wrong target in received direct_conn_request");
+      } else {
+        send(m_slave, std::move(addresses), port,
+             request_origin, hdr.source_node);
+      }
+      break;
+    }
+    case basp::direct_conn_response: {
+      CAF_ASSERT(payload == nullptr);
+      // TODO: signalizing stuff, complete handlers, etc.
+      //       and fill add this path to the blacklist on failure
+      break;
+    }
   }
   return await_header;
 }
@@ -668,8 +842,11 @@ basp_broker::connection_info basp_broker::get_route(const node_id& dest) {
   if (i != m_routes.end()) {
     auto& entry = i->second;
     res = entry.first;
+    CAF_LOG_DEBUG_IF(!res.invalid(),
+                     "using default route via " << to_string(res.node));
     if (res.invalid() && !entry.second.empty()) {
       res = *entry.second.begin();
+      CAF_LOG_DEBUG("using first auxiliary route via " << to_string(res.node));
     }
   }
   return res;
@@ -725,6 +902,7 @@ void basp_broker::on_exit() {
     CAF_ASSERT(proxy != nullptr);
     proxy->kill_proxy(exit_reason::remote_link_unreachable);
   }
+  m_slave = invalid_actor;
   m_namespace.clear();
   // remove all remaining state
   m_ctx.clear();
@@ -733,6 +911,8 @@ void basp_broker::on_exit() {
   m_routes.clear();
   m_blacklist.clear();
   m_pending_requests.clear();
+  m_inflight_conn_reqs.clear();
+  m_pending_conn_resps.clear();
 }
 
 void basp_broker::erase_proxy(const node_id& nid, actor_id aid) {
@@ -746,7 +926,9 @@ void basp_broker::erase_proxy(const node_id& nid, actor_id aid) {
 void basp_broker::add_route(const node_id& nid, connection_handle hdl) {
   if (m_blacklist.count(std::make_pair(nid, hdl)) == 0) {
     parent().notify<hook::new_route_added>(m_current_context->remote_id, nid);
-    m_routes[nid].second.insert({hdl, nid});
+    m_routes[nid].second.insert({hdl, m_current_context->remote_id});
+    CAF_LOG_DEBUG("added new route: " << to_string(nid) << " -> "
+                  << to_string(m_current_context->remote_id));
   }
 }
 
