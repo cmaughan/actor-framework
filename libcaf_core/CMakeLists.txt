@@ -24,6 +24,7 @@ set (LIBCAF_CORE_SRCS
      src/actor_proxy.cpp
      src/actor_registry.cpp
      src/attachable.cpp
+     src/announce_actor_type.cpp
      src/behavior.cpp
      src/behavior_stack.cpp
      src/behavior_impl.cpp
@@ -60,24 +61,26 @@ set (LIBCAF_CORE_SRCS
      src/message_data.cpp
      src/message_handler.cpp
      src/node_id.cpp
+     src/parse_config.cpp
+     src/parse_ini.cpp
      src/ref_counted.cpp
      src/response_promise.cpp
      src/replies_to.cpp
      src/resumable.cpp
      src/ripemd_160.cpp
-     src/run_program.cpp
+     src/run_sub_unit_test.cpp
      src/scoped_actor.cpp
      src/set_scheduler.cpp
      src/serializer.cpp
      src/shared_spinlock.cpp
      src/shutdown.cpp
      src/singletons.cpp
-     src/string_algorithms.cpp
      src/string_serialization.cpp
      src/sync_request_bouncer.cpp
      src/try_match.cpp
      src/uniform_type_info.cpp
-     src/uniform_type_info_map.cpp)
+     src/uniform_type_info_map.cpp
+     src/whereis.cpp)
 
 add_custom_target(libcaf_core)
 

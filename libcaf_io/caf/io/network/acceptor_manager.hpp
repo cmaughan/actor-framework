@@ -30,6 +30,8 @@ namespace network {
 /// callbacks for incoming connections as well as for error handling.
 class acceptor_manager : public manager {
 public:
+  acceptor_manager(abstract_broker* ptr);
+
   ~acceptor_manager();
 
   /// Called by the underlying IO device to indicate that

@@ -17,8 +17,10 @@
  * http://www.boost.org/LICENSE_1_0.txt.                                      *
  ******************************************************************************/
 
-#ifndef CAF_SINGLE_READER_QUEUE_HPP
-#define CAF_SINGLE_READER_QUEUE_HPP
+#ifndef CAF_DETAIL_SINGLE_READER_QUEUE_HPP
+#define CAF_DETAIL_SINGLE_READER_QUEUE_HPP
+
+#include "caf/config.hpp"
 
 #include <list>
 #include <deque>
@@ -27,8 +29,6 @@
 #include <memory>
 #include <limits>
 #include <condition_variable> // std::cv_status
-
-#include "caf/config.hpp"
 
 #include "caf/detail/intrusive_partitioned_list.hpp"
 
@@ -145,7 +145,7 @@ public:
   template <class F>
   void close(const F& f) {
     clear_cached_elements(f);
-    if (fetch_new_data(nullptr)) {
+    if (! blocked() && fetch_new_data(nullptr)) {
       clear_cached_elements(f);
     }
     cache_.clear(f);
@@ -320,4 +320,4 @@ private:
 } // namespace detail
 } // namespace caf
 
-#endif // CAF_SINGLE_READER_QUEUE_HPP
+#endif // CAF_DETAIL_SINGLE_READER_QUEUE_HPP

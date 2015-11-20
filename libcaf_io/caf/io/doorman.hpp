@@ -17,69 +17,43 @@
  * http://www.boost.org/LICENSE_1_0.txt.                                      *
  ******************************************************************************/
 
-#include "caf/config.hpp"
+#ifndef CAF_IO_DOORMAN_HPP
+#define CAF_IO_DOORMAN_HPP
 
-#define CAF_SUITE optional
-#include "caf/test/unit_test.hpp"
+#include <cstddef>
 
-#include <string>
+#include "caf/message.hpp"
+#include "caf/mailbox_element.hpp"
 
-#include "caf/optional.hpp"
+#include "caf/io/accept_handle.hpp"
+#include "caf/io/broker_servant.hpp"
+#include "caf/io/system_messages.hpp"
+#include "caf/io/network/acceptor_manager.hpp"
 
-using namespace std;
-using namespace caf;
+namespace caf {
+namespace io {
 
-CAF_TEST(empties) {
-  optional<int> i;
-  optional<int> j;
-  CAF_CHECK(i == j);
-  CAF_CHECK(!(i != j));
-}
+using doorman_base = broker_servant<network::acceptor_manager, accept_handle,
+                                    new_connection_msg>;
 
-CAF_TEST(unequal) {
-  optional<int> i = 5;
-  optional<int> j = 6;
-  CAF_CHECK(!(i == j));
-  CAF_CHECK(i != j);
-}
+/// Manages incoming connections.
+/// @ingroup Broker
+class doorman : public doorman_base {
+public:
+  doorman(abstract_broker* parent, accept_handle hdl);
 
-CAF_TEST(distinct_types) {
-  optional<int> i;
-  optional<double> j;
-  CAF_CHECK(i == j);
-  CAF_CHECK(!(i != j));
-}
+  ~doorman();
 
-struct qwertz {
-  qwertz(int i, int j) : i_(i), j_(j) {
-    // nop
-  }
-  int i_;
-  int j_;
+  void io_failure(network::operation op) override;
+
+  // needs to be launched explicitly
+  virtual void launch() = 0;
+
+protected:
+  message detach_message() override;
 };
 
-inline bool operator==(const qwertz& lhs, const qwertz& rhs) {
-  return lhs.i_ == rhs.i_ && lhs.j_ == rhs.j_;
-}
+} // namespace io
+} // namespace caf
 
-CAF_TEST(custom_type_none) {
-  optional<qwertz> i;
-  CAF_CHECK(i == none);
-}
-
-CAF_TEST(custom_type_engaged) {
-  qwertz obj{1, 2};
-  optional<qwertz> j = obj;
-  CAF_CHECK(j != none);
-  CAF_CHECK(obj == j);
-  CAF_CHECK(j == obj );
-  CAF_CHECK(obj == *j);
-  CAF_CHECK(*j == obj);
-}
-
-CAF_TEST(test_optional) {
-  optional<qwertz> i = qwertz(1,2);
-  CAF_CHECK(! i.empty());
-  optional<qwertz> j = { { 1, 2 } };
-  CAF_CHECK(! j.empty());
-}
+#endif // CAF_IO_DOORMAN_HPP

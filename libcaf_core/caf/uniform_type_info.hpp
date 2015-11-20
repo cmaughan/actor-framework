@@ -71,6 +71,48 @@ private:
   T value_;
 };
 
+template <class T, size_t N>
+class uniform_value_impl<T[N]> : public uniform_value_t {
+public:
+  uniform_value_impl(const uniform_type_info* ptr)
+      : uniform_value_t(ptr, &value_) {
+    // nop
+  }
+
+  uniform_value_impl(const uniform_type_info* ptr, const T (&vals)[N])
+      : uniform_value_t(ptr, &value_) {
+    array_copy(value_, vals);
+  }
+
+  uniform_value copy() override {
+    return uniform_value{new uniform_value_impl(ti, value_)};
+  }
+
+private:
+  template <class U, size_t Len>
+  static void array_copy_impl(U (&lhs)[Len], const U (&rhs)[Len],
+                              std::true_type) {
+    for (size_t i = 0; i < Len; ++i) {
+      array_copy(lhs[i], rhs[i]);
+    }
+  }
+
+  template <class U, size_t Len>
+  static void array_copy_impl(U (&lhs)[Len], const U (&rhs)[Len],
+                              std::false_type) {
+    std::copy(rhs, rhs + Len, lhs);
+  }
+
+  template <class U, size_t Len>
+  static void array_copy(U (&lhs)[Len], const U (&rhs)[Len]) {
+    array_copy_impl(lhs, rhs,
+                    std::integral_constant<bool,
+                                           std::is_array<U>::value>{});
+  }
+
+  T value_[N];
+};
+
 /// Creates a uniform value of type `T`.
 template <class T, class... Ts>
 uniform_value make_uniform_value(const uniform_type_info* uti, Ts&&... xs) {
@@ -104,9 +146,6 @@ uniform_value make_uniform_value(const uniform_type_info* uti, Ts&&... xs) {
 /// runtime.
 ///
 /// ~~~
-/// #include "caf/all.hpp"
-/// using namespace caf;
-///
 /// struct foo { int a; int b; };
 ///
 /// int main() {
@@ -170,7 +209,7 @@ public:
   /// Returns a vector with all known (announced) types.
   static std::vector<const uniform_type_info*> instances();
 
-  /// Creates a copy of `other`.
+  /// Creates a copy of `other` or a new instance if `other == nullptr`.
   virtual uniform_value create(const uniform_value& other
                                = uniform_value{}) const = 0;
 
@@ -208,9 +247,6 @@ public:
   /// @param source Data source.
   /// @pre `instance` has the type of `this`.
   virtual void deserialize(void* instance, deserializer* source) const = 0;
-
-  /// Returns `instance` encapsulated as an `message`.
-  virtual message as_message(void* instance) const = 0;
 
   /// Returns a unique number for builtin types or 0.
   uint16_t type_nr() const {

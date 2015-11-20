@@ -20,13 +20,14 @@
 #ifndef CAF_ACTOR_NAMESPACE_HPP
 #define CAF_ACTOR_NAMESPACE_HPP
 
-#include <map>
 #include <utility>
 #include <functional>
+#include <unordered_map>
 
 #include "caf/node_id.hpp"
 #include "caf/actor_cast.hpp"
 #include "caf/actor_proxy.hpp"
+#include "caf/exit_reason.hpp"
 
 namespace caf {
 
@@ -50,16 +51,42 @@ public:
 
   actor_namespace(backend& mgm);
 
+  actor_namespace(const actor_namespace&) = delete;
+  actor_namespace& operator=(const actor_namespace&) = delete;
+
   /// Writes an actor address to `sink` and adds the actor
   /// to the list of known actors for a later deserialization.
-  void write(serializer* sink, const actor_addr& ptr);
+  void write(serializer* sink, const actor_addr& ptr) const;
 
   /// Reads an actor address from `source,` creating
   /// addresses for remote actors on the fly if needed.
   actor_addr read(deserializer* source);
 
+  /// Ensures that `kill_proxy` is called for each proxy instance.
+  class proxy_entry {
+  public:
+    proxy_entry();
+    proxy_entry(actor_proxy::anchor_ptr ptr);
+    proxy_entry(proxy_entry&&) = default;
+    proxy_entry& operator=(proxy_entry&&) = default;
+    ~proxy_entry();
+
+    void reset(uint32_t rsn);
+
+    inline explicit operator bool() const {
+      return static_cast<bool>(ptr_);
+    }
+
+    inline actor_proxy::anchor* operator->() const {
+      return ptr_.get();
+    }
+
+  private:
+    actor_proxy::anchor_ptr ptr_;
+  };
+
   /// A map that stores all proxies for known remote actors.
-  using proxy_map = std::map<actor_id, actor_proxy::anchor_ptr>;
+  using proxy_map = std::map<actor_id, proxy_entry>;
 
   /// Returns the number of proxies for `node`.
   size_t count_proxies(const key_type& node);
@@ -82,7 +109,8 @@ public:
   void erase(const key_type& node);
 
   /// Deletes the proxy with id `aid` for `node`.
-  void erase(const key_type& node, actor_id aid);
+  void erase(const key_type& node, actor_id aid,
+             uint32_t rsn = exit_reason::remote_link_unreachable);
 
   /// Queries whether there are any proxies left.
   bool empty() const;
@@ -92,7 +120,7 @@ public:
 
 private:
   backend& backend_;
-  std::map<key_type, proxy_map> proxies_;
+  std::unordered_map<key_type, proxy_map> proxies_;
 };
 
 } // namespace caf

@@ -78,7 +78,7 @@ endif()
 #                                compiler setup                                #
 ################################################################################
 
-# check for g++ >= 4.7 or clang++ > = 3.2
+# check for g++ >= 4.8 or clang++ > = 3.2
 if(NOT WIN32 AND NOT CAF_NO_COMPILER_CHECK)
   try_run(ProgramResult
           CompilationSucceeded
@@ -88,10 +88,10 @@ if(NOT WIN32 AND NOT CAF_NO_COMPILER_CHECK)
   if(NOT CompilationSucceeded OR NOT ProgramResult EQUAL 0)
     message(FATAL_ERROR "Cannot determine compiler version")
   elseif("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
-    if(CompilerVersion VERSION_GREATER 4.6)
+    if(CompilerVersion VERSION_GREATER 4.7)
       message(STATUS "Found g++ version ${CompilerVersion}")
     else()
-      message(FATAL_ERROR "g++ >= 4.7 required (found: ${CompilerVersion})")
+      message(FATAL_ERROR "g++ >= 4.8 required (found: ${CompilerVersion})")
     endif()
   elseif("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
     if(CompilerVersion VERSION_GREATER 3.1)
@@ -106,9 +106,14 @@ if(NOT WIN32 AND NOT CAF_NO_COMPILER_CHECK)
 endif()
 # set optional build flags
 set(EXTRA_FLAGS "")
+# increase max. template depth on GCC and Clang
+if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang"
+   OR "${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
+  set(EXTRA_FLAGS "-ftemplate-depth=512")
+endif()
 # add "-Werror" flag if --pedantic-build is used
 if(CAF_CXX_WARNINGS_AS_ERRORS)
-  set(EXTRA_FLAGS "-Werror")
+  set(EXTRA_FLAGS "${EXTRA_FLAGS} -Werror")
 endif()
 # enable a ton of warnings if --more-clang-warnings is used
 if(CAF_MORE_WARNINGS)
@@ -195,6 +200,9 @@ if(MINGW)
   set(EXTRA_FLAGS "${EXTRA_FLAGS} -static")
 else()
   set(EXTRA_FLAGS "${EXTRA_FLAGS} -fPIC")
+endif()
+if (WIN32)
+  set(LD_FLAGS ${LD_FLAGS} ws2_32 iphlpapi)
 endif()
 # iOS support
 if(CAF_OSX_SYSROOT)
@@ -345,118 +353,95 @@ include_directories("${LIBCAF_INCLUDE_DIRS}")
 
 
 ################################################################################
-#                               add subprojects                                #
+#                                 add targets                                  #
 ################################################################################
 
-# build libcaf_test if not being told otherwise
-if(NOT CAF_NO_UNIT_TESTS)
-  #message(STATUS "Enter subdirectory libcaf_test")
-  #add_subdirectory(libcaf_test)
-endif()
-# core library
-add_subdirectory(libcaf_core)
-add_unit_tests("libcaf_core/test/*.cpp")
-add_unit_tests("libcaf_io/test/*.cpp")
-
-# set core lib for sub directories
-if(NOT CAF_BUILD_STATIC_ONLY)
-  set(LIBCAF_CORE_LIBRARY libcaf_core_shared)
-else()
-  set(LIBCAF_CORE_LIBRARY libcaf_core_static)
-endif()
-add_subdirectory(libcaf_io)
-# set io lib for sub directories
-if(NOT CAF_BUILD_STATIC_ONLY)
-  set(LIBCAF_IO_LIBRARY libcaf_io_shared)
-else()
-  set(LIBCAF_IO_LIBRARY libcaf_io_static)
-endif()
-# set opencl lib for sub directories if not told otherwise
-if(NOT CAF_NO_OPENCL
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libcaf_opencl/CMakeLists.txt")
-  find_package(OpenCL REQUIRED)
-  add_subdirectory(libcaf_opencl)
+macro(add_caf_lib name)
+  string(TOUPPER ${name} upper_name)
+  set(full_name libcaf_${name})
+  set(shared_target ${full_name}_shared)
+  set(static_target ${full_name}_static)
+  add_subdirectory(${full_name})
+  set(lib_varname CAF_LIBRARY_${upper_name})
+  set(lib_varname_static ${lib_varname}_STATIC)
   if(NOT CAF_BUILD_STATIC_ONLY)
-    set(LIBCAF_OPENCL_LIBRARY libcaf_opencl_shared)
+    set(${lib_varname} ${shared_target})
+    set(CAF_LIBRARIES ${CAF_LIBRARIES} ${shared_target})
   else()
-    set(LIBCAF_OPENCL_LIBRARY libcaf_opencl_static)
+    set(${lib_varname} ${static_target})
+    set(CAF_LIBRARIES ${CAF_LIBRARIES} ${static_target})
   endif()
-  add_unit_tests("libcaf_opencl/test/*.cpp")
-endif()
-# tell CMake caf_io depends on caf_core
-add_dependencies(libcaf_io libcaf_core)
-# set LIBCAF_LIBRARIES for other subprojects
-set(LIBCAF_LIBRARIES "${LIBCAF_CORE_LIBRARY}"
-                     "${LIBCAF_IO_LIBRARY}"
-                     "${LIBCAF_OPENCL_LIBRARY}")
-# build examples if not being told otherwise
-if(NOT CAF_NO_EXAMPLES)
-  add_subdirectory(examples)
-  add_dependencies(all_examples libcaf_core libcaf_io)
-  if(NOT CAF_NO_OPENCL
-     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libcaf_opencl/CMakeLists.txt")
-    add_subdirectory(libcaf_opencl/examples)
+  if(CAF_BUILD_STATIC_ONLY OR CAF_BUILD_STATIC)
+    set(${lib_varname_static} ${static_target})
   endif()
-endif()
-# build RIAC if not being told otherwise
-if(NOT CAF_NO_RIAC
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libcaf_riac/CMakeLists.txt")
-  add_subdirectory(libcaf_riac)
-  add_dependencies(libcaf_riac libcaf_core libcaf_io)
-  if(NOT CAF_BUILD_STATIC_ONLY)
-    set(LIBCAF_LIBRARIES "${LIBCAF_LIBRARIES}" libcaf_riac_shared)
-  else()
-    set(LIBCAF_LIBRARIES "${LIBCAF_LIBRARIES}" libcaf_riac_static)
-  endif()
+  add_unit_tests("${full_name}/test/*.cpp")
   # add headers to include directories so other subprojects can use RIAC
-  include_directories("${LIBCAF_INCLUDE_DIRS}"
-                      "${CMAKE_CURRENT_SOURCE_DIR}/libcaf_riac")
-  # add libcaf_riac to the list of caf libraries
-  set(CAF_HAS_RIAC yes)
-  # add unit tests
-  add_unit_tests("libcaf_riac/test/*.cpp")
-else()
-  set(CAF_HAS_RIAC no)
+  include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libcaf_${name}")
+endmacro()
+
+macro(add_optional_caf_lib name)
+  string(TOUPPER ${name} upper_name)
+  set(flag_varname CAF_NO_${upper_name})
+  if(NOT ${flag_varname}
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libcaf_${name}/CMakeLists.txt")
+    add_caf_lib(${name})
+  else()
+    set(${flag_name} yes)
+  endif()
+endmacro()
+
+macro(add_optional_caf_binaries name)
+  string(TOUPPER ${name} upper_name)
+  set(dependency_failed no)
+  # check all aditional dependency flags
+  foreach(flag_name ${ARGN})
+    if(${flag_name})
+      set(dependency_failed yes)
+    endif()
+  endforeach()
+  if(NOT dependency_failed)
+    if(NOT CAF_NO_${upper_name}
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${name}/CMakeLists.txt")
+      add_subdirectory(${name})
+    else()
+      # make sure variable is set for nicer build log
+      set(CAF_NO_${upper_name} yes)
+    endif()
+  else()
+    message(STATUS
+            "Disable ${name}, one of the following flags was set: ${ARGN}")
+    # make sure variable is set for nicer build log
+    set(CAF_NO_${upper_name} yes)
+  endif()
+endmacro()
+
+# build core and I/O library
+add_caf_lib(core)
+add_caf_lib(io)
+
+# build opencl library if not told otherwise and OpenCL package was found
+if(NOT CAF_NO_OPENCL)
+  find_package(OpenCL)
+  if(OpenCL_FOUND)
+    add_optional_caf_lib(opencl)
+    add_optional_caf_binaries(libcaf_opencl/examples)
+  endif()
 endif()
+
+# build RIAC library if not being told otherwise
+add_optional_caf_lib(riac)
+
+# build examples if not being told otherwise
+add_optional_caf_binaries(examples)
+
 # build nexus if not being told otherwise
-if(NOT CAF_NO_NEXUS
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/nexus/CMakeLists.txt")
-  if(NOT CAF_HAS_RIAC)
-    message(WARNING "cannot build nexus without RIAC submodule")
-    set(CAF_NO_NEXUS yes)
-  else()
-    add_subdirectory(nexus)
-    add_dependencies(nexus libcaf_riac)
-    set(CAF_NO_NEXUS no)
-  endif()
-else()
-  # make sure variable is set for build log
-  set(CAF_NO_NEXUS yes)
-endif()
+add_optional_caf_binaries(nexus CAF_NO_RIAC)
+
 # build cash if not being told otherwise
-if(NOT CAF_NO_CASH
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cash/CMakeLists.txt")
-  if(NOT CAF_HAS_RIAC)
-    message(WARNING "cannot build cash without RIAC submodule")
-    set(CAF_NO_CASH yes)
-  else()
-    add_subdirectory(cash)
-    add_dependencies(cash libcaf_riac)
-    set(CAF_NO_CASH no)
-  endif()
-else()
-  # make sure variable is set for build log
-  set(CAF_NO_CASH yes)
-endif()
+add_optional_caf_binaries(cash CAF_NO_RIAC)
+
 # build benchmarks if not being told otherwise
-if(NOT CAF_NO_BENCHMARKS
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/CMakeLists.txt")
-  add_subdirectory(benchmarks)
-  add_dependencies(all_benchmarks libcaf_io)
-else()
-  # make sure variable is set for build log
-  set(CAF_NO_BENCHMARKS yes)
-endif()
+add_optional_caf_binaries(benchmarks)
 
 
 ################################################################################
@@ -472,7 +457,7 @@ if(NOT CAF_NO_UNIT_TESTS)
                  ${CAF_ALL_UNIT_TESTS})
   target_link_libraries(caf-test
                         ${LD_FLAGS}
-                        ${LIBCAF_LIBRARIES}
+                        ${CAF_LIBRARIES}
                         ${PTHREAD_LIBRARIES})
   add_custom_target(all_unit_tests)
   add_dependencies(caf-test all_unit_tests)
@@ -522,7 +507,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/manual/variables.tex.in"
 # check for doxygen and add custom "doc" target to Makefile
 find_package(Doxygen)
 if(DOXYGEN_FOUND)
-  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in"
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/doc/Doxyfile.in"
                  "${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile"
                  @ONLY)
   add_custom_target(doc "${DOXYGEN_EXECUTABLE}"
@@ -572,6 +557,7 @@ endmacro()
 # invert CAF_NO_* variables for nicer output
 invertYesNo(CAF_NO_EXAMPLES CAF_BUILD_EXAMPLES)
 invertYesNo(CAF_NO_UNIT_TESTS CAF_BUILD_UNIT_TESTS)
+invertYesNo(CAF_NO_RIAC CAF_BUILD_RIAC)
 invertYesNo(CAF_NO_NEXUS CAF_BUILD_NEXUS)
 invertYesNo(CAF_NO_CASH CAF_BUILD_CASH)
 invertYesNo(CAF_NO_MEM_MANAGEMENT CAF_BUILD_MEM_MANAGEMENT)
@@ -589,14 +575,14 @@ if(NOT CAF_NO_SUMMARY)
         "\n"
         "\nBuild type:        ${CMAKE_BUILD_TYPE}"
         "\nBuild static:      ${CAF_BUILD_STATIC}"
-        "\nBulid static only: ${CAF_BUILD_STATIC_ONLY}"
+        "\nBuild static only: ${CAF_BUILD_STATIC_ONLY}"
         "\nRuntime checks:    ${CAF_ENABLE_RUNTIME_CHECKS}"
         "\nLog level:         ${LOG_LEVEL_STR}"
         "\nWith mem. mgmt.:   ${CAF_BUILD_MEM_MANAGEMENT}"
         "\n"
         "\nBuild examples:    ${CAF_BUILD_EXAMPLES}"
         "\nBuild unit tests:  ${CAF_BUILD_UNIT_TESTS}"
-        "\nBuild riac:        ${CAF_HAS_RIAC}"
+        "\nBuild riac:        ${CAF_BUILD_RIAC}"
         "\nBuild nexus:       ${CAF_BUILD_NEXUS}"
         "\nBuild cash:        ${CAF_BUILD_CASH}"
         "\nBuild benchmarks:  ${CAF_BUILD_BENCHMARKS}"

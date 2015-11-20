@@ -27,13 +27,16 @@
 #include "caf/extend.hpp"
 #include "caf/local_actor.hpp"
 
+#include "caf/io/scribe.hpp"
+#include "caf/io/doorman.hpp"
 #include "caf/io/abstract_broker.hpp"
 
 namespace caf {
 namespace io {
 
-/// A broker mediates between actor systems and other components in the network.
-/// @extends local_actor
+/// Describes a dynamically typed broker.
+/// @extends abstract_broker
+/// @ingroup Broker
 class broker : public abstract_event_based_actor<behavior, false,
                                                  abstract_broker> {
 public:
@@ -41,24 +44,13 @@ public:
 
   template <class F, class... Ts>
   actor fork(F fun, connection_handle hdl, Ts&&... xs) {
-    // provoke compile-time errors early
-    using fun_res = decltype(fun(this, hdl, std::forward<Ts>(xs)...));
-    // prevent warning about unused local type
-    static_assert(std::is_same<fun_res, fun_res>::value,
-                  "your compiler is lying to you");
-    auto i = scribes_.find(hdl);
-    if (i == scribes_.end()) {
-      CAF_LOG_ERROR("invalid handle");
-      throw std::invalid_argument("invalid handle");
-    }
-    auto sptr = i->second;
+    auto sptr = take(hdl);
     CAF_ASSERT(sptr->hdl() == hdl);
-    scribes_.erase(i);
-    return spawn_functor(nullptr, [sptr](broker* forked) {
-                                    sptr->set_broker(forked);
-                                    forked->scribes_.emplace(sptr->hdl(),
-                                                              sptr);
-                                  },
+    return spawn_functor(nullptr,
+                         [sptr](broker* forked) {
+                           sptr->set_parent(forked);
+                           forked->add_scribe(sptr);
+                         },
                          fun, hdl, std::forward<Ts>(xs)...);
   }
 

@@ -38,14 +38,12 @@ namespace caf {
 namespace detail {
 
 namespace {
-  using cache_map = std::map<const std::type_info*, std::unique_ptr<memory_cache>>;
-}
 
-memory_cache::~memory_cache() {
-    // nop
-}
-#ifdef CAF_CLANG
+using cache_map = std::map<const std::type_info*, std::unique_ptr<memory_cache>>;
 
+} // namespace <anonymous>
+
+#if defined(CAF_CLANG) || defined(CAF_MACOS)
 namespace {
 
 pthread_key_t s_key;
@@ -69,30 +67,34 @@ cache_map& get_cache_map() {
     pthread_setspecific(s_key, cache);
     // insert default types
     std::unique_ptr<memory_cache> tmp(new basic_memory_cache<mailbox_element>);
-    cache->emplace(&typeid(mailbox_element), move(tmp));
+    cache->emplace(&typeid(mailbox_element), std::move(tmp));
   }
   return *cache;
 }
 
-#else // !CAF_CLANG
+#else // !CAF_CLANG && !CAF_MACOS
 
 namespace {
-thread_local std::shared_ptr<cache_map> s_key;
-}
+
+thread_local std::unique_ptr<cache_map> s_key;
+
+} // namespace <anonymous>
 
 cache_map& get_cache_map() {
-    
-    if (!s_key) 
-    {
-        s_key = std::make_shared<cache_map>();
-
-        // insert default types
-        std::unique_ptr<memory_cache> tmp(new basic_memory_cache<mailbox_element>);
-        s_key->emplace(&typeid(mailbox_element), move(tmp));
-    }
-    return *s_key;
+  if (! s_key) {
+    s_key = std::unique_ptr<cache_map>(new cache_map);
+    // insert default types
+    std::unique_ptr<memory_cache> tmp(new basic_memory_cache<mailbox_element>);
+    s_key->emplace(&typeid(mailbox_element), std::move(tmp));
+  }
+  return *s_key;
 }
+
 #endif
+
+memory_cache::~memory_cache() {
+  // nop
+}
 
 memory_cache* memory::get_cache_map_entry(const std::type_info* tinf) {
   auto& cache = get_cache_map();

@@ -35,7 +35,7 @@
 /// Denotes version of CAF in the format {MAJOR}{MINOR}{PATCH},
 /// whereas each number is a two-digit decimal number without
 /// leading zeros (e.g. 900 is version 0.9.0).
-#define CAF_VERSION 1400
+#define CAF_VERSION 1403
 
 /// Defined to the major version number of CAF.
 #define CAF_MAJOR_VERSION (CAF_VERSION / 10000)
@@ -61,6 +61,7 @@
 #if defined(__clang__)
 #  define CAF_CLANG
 #  define CAF_DEPRECATED __attribute__((__deprecated__))
+#  define CAF_DEPRECATED_MSG(msg) __attribute__((__deprecated__(msg)))
 #  define CAF_PUSH_WARNINGS                                                    \
     _Pragma("clang diagnostic push")                                           \
     _Pragma("clang diagnostic ignored \"-Wall\"")                              \
@@ -92,7 +93,14 @@
     _Pragma("clang diagnostic ignored \"-Wused-but-marked-unused\"")           \
     _Pragma("clang diagnostic ignored \"-Wdisabled-macro-expansion\"")         \
     _Pragma("clang diagnostic ignored \"-Wunreachable-code\"")                 \
+    _Pragma("clang diagnostic ignored \"-Wreserved-id-macro\"")                \
     _Pragma("clang diagnostic ignored \"-Wsign-conversion\"")
+#  define CAF_PUSH_NON_VIRTUAL_DTOR_WARNING                                    \
+    _Pragma("clang diagnostic push")                                           \
+    _Pragma("clang diagnostic ignored \"-Wnon-virtual-dtor\"")
+#  define CAF_PUSH_NO_DEPRECATED_WARNING                                       \
+    _Pragma("clang diagnostic push")                                           \
+    _Pragma("clang diagnostic ignored \"-Wdeprecated\"")
 #  define CAF_POP_WARNINGS                                                     \
     _Pragma("clang diagnostic pop")
 #  define CAF_ANNOTATE_FALLTHROUGH [[clang::fallthrough]]
@@ -101,15 +109,25 @@
 #elif defined(__GNUC__)
 #  define CAF_GCC
 #  define CAF_DEPRECATED __attribute__((__deprecated__))
+#  define CAF_DEPRECATED_MSG(msg) __attribute__((__deprecated__(msg)))
 #  define CAF_PUSH_WARNINGS
-#  define CAF_POP_WARNINGS
+#  define CAF_PUSH_NON_VIRTUAL_DTOR_WARNING                                    \
+    _Pragma("GCC diagnostic push")                                             \
+    _Pragma("GCC diagnostic ignored \"-Wnon-virtual-dtor\"")
+#  define CAF_PUSH_NO_DEPRECATED_WARNING                                       \
+    _Pragma("GCC diagnostic push")                                             \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#  define CAF_POP_WARNINGS                                                     \
+    _Pragma("GCC diagnostic pop")
 #  define CAF_ANNOTATE_FALLTHROUGH static_cast<void>(0)
 #  define CAF_COMPILER_VERSION                                                 \
      (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
 #elif defined(_MSC_VER)
 #  define CAF_MSVC
 #  define CAF_DEPRECATED
+#  define CAF_DEPRECATED_MSG(msg)
 #  define CAF_PUSH_WARNINGS
+#  define CAF_PUSH_NON_VIRTUAL_DTOR_WARNING
 #  define CAF_POP_WARNINGS
 #  define CAF_ANNOTATE_FALLTHROUGH static_cast<void>(0)
 #  define CAF_COMPILER_VERSION _MSC_FULL_VER
@@ -136,7 +154,7 @@
 #    define CAF_IOS
 #  else
 #    define CAF_MACOS
-#    ifndef _GLIBCXX_HAS_GTHREADS
+#    if defined(CAF_GCC) && ! defined(_GLIBCXX_HAS_GTHREADS)
 #      define _GLIBCXX_HAS_GTHREADS
 #    endif
 #  endif

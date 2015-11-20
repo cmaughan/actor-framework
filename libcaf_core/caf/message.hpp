@@ -23,6 +23,7 @@
 #include <tuple>
 #include <type_traits>
 
+#include "caf/fwd.hpp"
 #include "caf/atom.hpp"
 #include "caf/config.hpp"
 #include "caf/from_string.hpp"
@@ -30,11 +31,10 @@
 #include "caf/skip_message.hpp"
 
 #include "caf/detail/int_list.hpp"
-#include "caf/detail/comparable.hpp"
 #include "caf/detail/apply_args.hpp"
-#include "caf/detail/type_traits.hpp"
-
+#include "caf/detail/comparable.hpp"
 #include "caf/detail/tuple_vals.hpp"
+#include "caf/detail/type_traits.hpp"
 #include "caf/detail/message_data.hpp"
 #include "caf/detail/implicit_conversions.hpp"
 
@@ -122,7 +122,7 @@ public:
   }
 
   /// Returns `handler(*this)`.
-  optional<message> apply(message_handler handler);
+  maybe<message> apply(message_handler handler);
 
   /// Filters this message by applying slices of it to `handler` and  returns
   /// the remaining elements of this operation. Slices are generated in the
@@ -159,6 +159,8 @@ public:
   /// Stores the name of a command line option ("<long name>[,<short name>]")
   /// along with a description and a callback.
   struct cli_arg {
+    /// Returns `true` on a match, `false` otherwise.
+    using consumer = std::function<bool (const std::string&)>;
 
     /// Full name of this CLI argument using format "<long name>[,<short name>]"
     std::string name;
@@ -169,8 +171,8 @@ public:
     /// Auto-generated helptext for this item.
     std::string helptext;
 
-    /// Returns `true` on a match, `false` otherwise.
-    std::function<bool (const std::string&)> fun;
+    /// Evaluates option arguments.
+    consumer fun;
 
     /// Creates a CLI argument without data.
     cli_arg(std::string name, std::string text);
@@ -181,10 +183,17 @@ public:
     /// Creates a CLI argument appending matched arguments to `dest`.
     cli_arg(std::string name, std::string text, std::vector<std::string>& dest);
 
+    /// Creates a CLI argument using the function object `f`.
+    cli_arg(std::string name, std::string text, consumer f);
+
     /// Creates a CLI argument for converting from strings,
     /// storing its matched argument in `dest`.
     template <class T>
-    cli_arg(std::string name, std::string text, T& dest);
+    cli_arg(typename std::enable_if<
+              detail::type_nr<T>::value != 0,
+              std::string
+            >::type name,
+            std::string text, T& dest);
 
     /// Creates a CLI argument for converting from strings,
     /// appending matched arguments to `dest`.
@@ -227,13 +236,16 @@ public:
   /// }
   /// ~~~
   /// @param xs List of argument descriptors.
-  /// @param f Optional factory function to generate help text
-  ///          (overrides the default generator).
+  /// @param help_generator Optional factory function to generate help text
+  ///                       (overrides the default generator).
+  /// @param suppress_help Suppress generation of default-generated help option.
   /// @returns A struct containing remainder
   ///          (i.e. unmatched elements), a set containing the names of all
   ///          used arguments, and the generated help text.
   /// @throws std::invalid_argument if no name or more than one long name is set
-  cli_res extract_opts(std::vector<cli_arg> xs, help_factory f = nullptr) const;
+  cli_res extract_opts(std::vector<cli_arg> xs,
+                       help_factory help_generator = nullptr,
+                       bool suppress_help = false) const;
 
   /// Queries whether the element at position `p` is of type `T`.
   template <class T>
@@ -254,6 +266,10 @@ public:
   }
 
   /// @cond PRIVATE
+
+  void serialize(serializer& sink) const;
+
+  void deserialize(deserializer& source);
 
   using raw_ptr = detail::message_data*;
 
@@ -277,8 +293,8 @@ public:
     return vals_ ? vals_->type_token() : 0xFFFFFFFF;
   }
 
-  inline void force_detach() {
-    vals_.detach();
+  inline void force_unshare() {
+    vals_.unshare();
   }
 
   void reset(raw_ptr new_ptr = nullptr, bool add_ref = true);
@@ -376,6 +392,7 @@ make_message(V&& x, Ts&&... xs) {
                          typename unbox_message_element<
                            typename detail::strip_and_convert<Ts>::type
                          >::type...>;
+
   auto ptr = make_counted<storage>(std::forward<V>(x), std::forward<Ts>(xs)...);
   return message{detail::message_data::cow_ptr{std::move(ptr)}};
 }
@@ -386,12 +403,22 @@ inline message make_message(message other) {
   return std::move(other);
 }
 
+/// Returns an empty `message`.
+/// @relates message
+inline message make_message() {
+  return message{};
+}
+
 /******************************************************************************
  *                  template member function implementations                  *
  ******************************************************************************/
 
 template <class T>
-message::cli_arg::cli_arg(std::string nstr, std::string tstr, T& arg)
+message::cli_arg::cli_arg(typename std::enable_if<
+                            detail::type_nr<T>::value != 0,
+                            std::string
+                          >::type
+                          nstr, std::string tstr, T& arg)
     : name(std::move(nstr)),
       text(std::move(tstr)),
       fun([&arg](const std::string& str) -> bool {

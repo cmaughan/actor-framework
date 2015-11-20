@@ -93,7 +93,7 @@ public:
   }
 
   std::pair<bool, size_t> add_subscriber(const actor_addr& who) {
-    CAF_LOG_TRACE(""); // serializing who would cause a deadlock
+    CAF_LOG_TRACE(CAF_TSARG(who));
     exclusive_guard guard(mtx_);
     if (who && subscribers_.insert(who).second) {
       return {true, subscribers_.size()};
@@ -133,7 +133,8 @@ public:
     return broker_;
   }
 
-  local_group(bool spawn_local_broker, local_group_module* mod, std::string id);
+  local_group(bool spawn_local_broker, local_group_module* mod,
+              std::string id, const node_id& nid);
 
   ~local_group();
 
@@ -219,7 +220,25 @@ private:
 // has local subscriptions and a "LEAVE" message to the original group
 // if there's no subscription left.
 
-class proxy_broker;
+class local_group_proxy;
+
+using local_group_proxy_ptr = intrusive_ptr<local_group_proxy>;
+
+class proxy_broker : public event_based_actor {
+public:
+  explicit proxy_broker(local_group_proxy_ptr grp) : group_(std::move(grp)) {
+    // nop
+  }
+
+  behavior make_behavior();
+
+  void on_exit() {
+    group_.reset();
+  }
+
+private:
+  local_group_proxy_ptr group_;
+};
 
 class local_group_proxy : public local_group {
 public:
@@ -236,7 +255,7 @@ public:
   }
 
   attachable_ptr subscribe(const actor_addr& who) override {
-    CAF_LOG_TRACE(""); // serializing who would cause a deadlock
+    CAF_LOG_TRACE(CAF_TSARG(who));
     auto res = add_subscriber(who);
     if (res.first) {
       if (res.second == 1) {
@@ -293,30 +312,14 @@ private:
   actor monitor_;
 };
 
-using local_group_proxy_ptr = intrusive_ptr<local_group_proxy>;
-
-class proxy_broker : public event_based_actor {
-public:
-  explicit proxy_broker(local_group_proxy_ptr grp) : group_(std::move(grp)) {
-    // nop
-  }
-
-  behavior make_behavior() {
-    return {
-      others >> [=] {
-        group_->send_all_subscribers(current_sender(), current_message(),
-                                      host());
-      }
-    };
-  }
-
-  void on_exit() {
-    group_.reset();
-  }
-
-private:
-  local_group_proxy_ptr group_;
-};
+behavior proxy_broker::make_behavior() {
+  return {
+    others >> [=] {
+      group_->send_all_subscribers(current_sender(), current_message(),
+                                   host());
+    }
+  };
+}
 
 class local_group_module : public abstract_group::module {
 public:
@@ -333,7 +336,8 @@ public:
     if (i != instances_.end()) {
       return {i->second};
     }
-    auto tmp = make_counted<local_group>(true, this, identifier);
+    auto tmp = make_counted<local_group>(true, this, identifier,
+                                         singletons::get_node_id());
     upgrade_to_unique_guard uguard(guard);
     auto p = instances_.emplace(identifier, tmp);
     auto result = p.first->second;
@@ -363,7 +367,8 @@ public:
       return {i->second};
     }
     local_group_ptr tmp = make_counted<local_group_proxy>(broker, this,
-                                                          identifier);
+                                                          identifier,
+                                                          broker->node());
     upgrade_to_unique_guard uguard(guard);
     auto p = proxies_.emplace(broker, tmp);
     // someone might preempt us
@@ -371,7 +376,6 @@ public:
   }
 
   void serialize(local_group* ptr, serializer* sink) {
-    // serialize identifier & broker
     sink->write_value(ptr->identifier());
     CAF_ASSERT(ptr->broker() != invalid_actor);
     actor_utype_->serialize(&ptr->broker(), sink);
@@ -403,8 +407,9 @@ private:
   std::map<actor, local_group_ptr> proxies_;
 };
 
-local_group::local_group(bool do_spawn, local_group_module* mod, std::string id)
-    : abstract_group(mod, std::move(id)) {
+local_group::local_group(bool do_spawn, local_group_module* mod,
+                         std::string id, const node_id& nid)
+    : abstract_group(mod, std::move(id), nid) {
   if (do_spawn) {
     broker_ = spawn<local_broker, hidden>(this);
   }

@@ -499,7 +499,7 @@ CAF_TEST(send_to_self) {
   self->receive(on() >> [] {});
 }
 
-CAF_TEST(echo_actor) {
+CAF_TEST(echo_actor_messaging) {
   scoped_actor self;
   auto mecho = spawn<echo_actor>();
   self->send(mecho, "hello echo");
@@ -531,7 +531,7 @@ CAF_TEST(delayed_spawn) {
   spawn<testee1>();
 }
 
-CAF_TEST(spawn_event_testee2) {
+CAF_TEST(spawn_event_testee2_test) {
   scoped_actor self;
   spawn_event_testee2(self);
   self->receive(
@@ -631,7 +631,7 @@ CAF_TEST(sync_sends) {
   self->receive (
     [&](const down_msg& dm) {
       CAF_CHECK_EQUAL(dm.reason, exit_reason::normal);
-      CAF_CHECK_EQUAL(dm.source, sync_testee);
+      CAF_CHECK(dm.source == sync_testee);
     }
   );
   self->await_all_other_actors_done();
@@ -649,87 +649,6 @@ CAF_TEST(sync_sends) {
   );
 }
 #endif // CAF_WINDOWS
-
-CAF_TEST(inflater) {
-  scoped_actor self;
-  struct inflater : public event_based_actor {
-  public:
-    inflater(string name, actor buddy)
-        : name_(std::move(name)),
-          buddy_(std::move(buddy)) {
-      inc_actor_instances();
-    }
-    ~inflater() {
-      dec_actor_instances();
-    }
-    behavior make_behavior() override {
-      return {
-        [=](int n, const string& str) {
-          send(buddy_, n * 2, str + " from " + name_);
-        },
-        [=](ok_atom) {
-          quit();
-        }
-      };
-    }
-  private:
-    string name_;
-    actor buddy_;
-  };
-  auto joe = spawn<inflater>("Joe", self);
-  auto bob = spawn<inflater>("Bob", joe);
-  self->send(bob, 1, "hello actor");
-  self->receive (
-    [](int x, const std::string& y) {
-      CAF_CHECK_EQUAL(x, 4);
-      CAF_CHECK_EQUAL(y, "hello actor from Bob from Joe");
-    },
-    others >> [&] {
-      CAF_TEST_ERROR("Unexpected message: "
-                     << to_string(self->current_message()));
-    }
-  );
-  // kill joe and bob
-  auto ok_message = make_message(ok_atom::value);
-  anon_send(joe, ok_message);
-  anon_send(bob, ok_message);
-}
-
-CAF_TEST(kr34t0r) {
-  class kr34t0r : public event_based_actor {
-  public:
-    kr34t0r(string name, actor pal)
-        : name_(std::move(name)),
-          pal_(std::move(pal)) {
-      inc_actor_instances();
-    }
-    ~kr34t0r() {
-      dec_actor_instances();
-    }
-    behavior make_behavior() override {
-      if (name_ == "Joe" && pal_ == invalid_actor) {
-        pal_ = spawn<kr34t0r>("Bob", this);
-      }
-      return {
-        others >> [=] {
-          // forward message and die
-          send(pal_, current_message());
-          quit();
-        }
-      };
-    }
-    void on_exit() override {
-      pal_ = invalid_actor; // break cycle
-    }
-
-  private:
-    string name_;
-    actor pal_;
-  };
-  scoped_actor self;
-  auto joe_the_second = spawn<kr34t0r>("Joe", invalid_actor);
-  self->send(joe_the_second, ok_atom::value);
-}
 
 CAF_TEST(function_spawn) {
   scoped_actor self;
@@ -771,7 +690,7 @@ typed_testee::behavior_type testee() {
 
 CAF_TEST(typed_await) {
   scoped_actor self;
-  auto x = spawn_typed(testee);
+  auto x = spawn(testee);
   self->sync_send(x, abc_atom::value).await(
     [](const std::string& str) {
       CAF_CHECK_EQUAL(str, "abc");
@@ -828,7 +747,7 @@ CAF_TEST(constructor_attach) {
           }
         },
         others >> [=] {
-          CAF_TEST_VERBOSE("forward to testee: "
+          CAF_MESSAGE("forward to testee: "
                            << to_string(current_message()));
           forward_to(testee_);
         }
@@ -836,7 +755,7 @@ CAF_TEST(constructor_attach) {
     }
 
     void on_exit() {
-      CAF_TEST_VERBOSE("spawner::on_exit()");
+      CAF_MESSAGE("spawner::on_exit()");
       testee_ = invalid_actor;
     }
 
@@ -852,7 +771,7 @@ namespace {
 class exception_testee : public event_based_actor {
 public:
   exception_testee() {
-    set_exception_handler([](const std::exception_ptr&) -> optional<uint32_t> {
+    set_exception_handler([](const std::exception_ptr&) -> maybe<uint32_t> {
       return exit_reason::user_defined + 2;
     });
   }
@@ -868,7 +787,7 @@ public:
 } // namespace <anonymous>
 
 CAF_TEST(custom_exception_handler) {
-  auto handler = [](const std::exception_ptr& eptr) -> optional<uint32_t> {
+  auto handler = [](const std::exception_ptr& eptr) -> maybe<uint32_t> {
     try {
       std::rethrow_exception(eptr);
     }
@@ -936,6 +855,27 @@ CAF_TEST(exit_reason_in_scoped_actor) {
   scoped_actor self;
   self->spawn<linked>([]() -> behavior { return others >> [] {}; });
   self->planned_exit_reason(exit_reason::user_defined);
+}
+
+CAF_TEST(move_only_argument) {
+  using unique_int = std::unique_ptr<int>;
+  unique_int uptr{new int(42)};
+  auto f = [](event_based_actor* self, unique_int ptr) -> behavior {
+    auto i = *ptr;
+    return {
+      others >> [=] {
+        self->quit();
+        return i;
+      }
+    };
+  };
+  auto testee = spawn(f, std::move(uptr));
+  scoped_actor self;
+  self->sync_send(testee, 1.f).await(
+    [](int i) {
+      CAF_CHECK(i == 42);
+    }
+  );
 }
 
 CAF_TEST_FIXTURE_SCOPE_END()

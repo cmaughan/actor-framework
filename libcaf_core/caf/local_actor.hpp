@@ -72,22 +72,24 @@ public:
   ~local_actor();
 
   /****************************************************************************
-   *                           spawn untyped actors                           *
+   *                           spawn actors                                   *
    ****************************************************************************/
 
   template <class T, spawn_options Os = no_spawn_options, class... Ts>
-  actor spawn(Ts&&... xs) {
+  typename infer_handle_from_class<T>::type
+  spawn(Ts&&... xs) {
     constexpr auto os = make_unbound(Os);
     auto res = spawn_class<T, os>(host(), empty_before_launch_callback{},
                                   std::forward<Ts>(xs)...);
     return eval_opts(Os, std::move(res));
   }
 
-  template <spawn_options Os = no_spawn_options, class... Ts>
-  actor spawn(Ts&&... xs) {
+  template <spawn_options Os = no_spawn_options, class F, class... Ts>
+  typename infer_handle_from_fun<F>::type
+  spawn(F fun, Ts&&... xs) {
     constexpr auto os = make_unbound(Os);
     auto res = spawn_functor<os>(host(), empty_before_launch_callback{},
-                                 std::forward<Ts>(xs)...);
+                                 std::move(fun), std::forward<Ts>(xs)...);
     return eval_opts(Os, std::move(res));
   }
 
@@ -139,11 +141,11 @@ public:
   }
 
   /****************************************************************************
-   *                            spawn typed actors                            *
+   *                      spawn typed actors (deprecated)                     *
    ****************************************************************************/
 
   template <class T, spawn_options Os = no_spawn_options, class... Ts>
-  typename actor_handle_from_signature_list<
+  CAF_DEPRECATED typename actor_handle_from_signature_list<
     typename T::signatures
   >::type
   spawn_typed(Ts&&... xs) {
@@ -154,7 +156,7 @@ public:
   }
 
   template <spawn_options Os = no_spawn_options, typename F, class... Ts>
-  typename infer_typed_actor_handle<
+  CAF_DEPRECATED typename infer_typed_actor_handle<
     typename detail::get_callable_trait<F>::result_type,
     typename detail::tl_head<
       typename detail::get_callable_trait<F>::arg_types
@@ -380,12 +382,27 @@ public:
       functor_attachable(F arg) : functor_(std::move(arg)) {
         // nop
       }
-      optional<uint32_t> handle_exception(const std::exception_ptr& eptr) {
+      maybe<uint32_t> handle_exception(const std::exception_ptr& eptr) {
         return functor_(eptr);
       }
     };
     attach(attachable_ptr{new functor_attachable(std::move(f))});
   }
+
+  /// Returns an implementation-dependent name for logging purposes, which
+  /// is only valid as long as the actor is running. The default
+  /// implementation simply returns "actor".
+  virtual const char* name() const;
+
+  /// Serializes the state of this actor to `sink`. This function is
+  /// only called if this actor has set the `is_serializable` flag.
+  /// The default implementation throws a `std::logic_error`.
+  virtual void save_state(serializer& sink, const unsigned int version);
+
+  /// Deserializes the state of this actor from `source`. This function is
+  /// only called if this actor has set the `is_serializable` flag.
+  /// The default implementation throws a `std::logic_error`.
+  virtual void load_state(deserializer& source, const unsigned int version);
 
   /****************************************************************************
    *                       deprecated member functions                        *
@@ -412,6 +429,13 @@ public:
    ****************************************************************************/
 
   /// @cond PRIVATE
+
+  // handle `ptr` in an event-based actor
+  std::pair<resumable::resume_result, invoke_message_result>
+  exec_event(mailbox_element_ptr& ptr);
+
+  // handle `ptr` in an event-based actor, not suitable to be called in a loop
+  void exec_single_event(mailbox_element_ptr& ptr);
 
   local_actor();
 
@@ -458,7 +482,9 @@ public:
     return (mid.is_request()) ? mid.response_id() : message_id();
   }
 
-  void forward_message(const actor& dest, message_priority mp);
+  void forward_current_message(const actor& dest);
+
+  void forward_current_message(const actor& dest, message_priority mp);
 
   template <class... Ts>
   void delegate(message_priority mp, const actor& dest, Ts&&... xs) {
@@ -544,7 +570,11 @@ public:
 
   virtual void initialize() = 0;
 
-  void cleanup(uint32_t reason);
+  // clear behavior stack and call cleanup if actor either has no
+  // valid behavior left or has set a planned exit reason
+  bool finalize();
+
+  void cleanup(uint32_t reason) override;
 
   // an actor can have multiple pending timeouts, but only
   // the latest one is active (i.e. the pending_timeouts_.back())
@@ -575,7 +605,7 @@ public:
 
   bool awaits(message_id response_id) const;
 
-  optional<pending_response&> find_pending_response(message_id mid);
+  maybe<pending_response&> find_pending_response(message_id mid);
 
   void set_response_handler(message_id response_id, behavior bhvr);
 
@@ -606,9 +636,9 @@ public:
     initial_behavior_fac_ = std::move(fun);
   }
 
-protected:
   void do_become(behavior bhvr, bool discard_old);
 
+protected:
   // used only in thread-mapped actors
   void await_data();
 

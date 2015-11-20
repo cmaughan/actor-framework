@@ -85,7 +85,7 @@ void testee(event_based_actor* self, size_t remaining) {
     else self->quit();
   };
   self->become (
-     on<bar>() >> [=](const bar& val) {
+    [=](const bar& val) {
       aout(self) << "bar(foo("
              << val.f.a() << ", "
              << val.f.b() << "), "
@@ -93,7 +93,7 @@ void testee(event_based_actor* self, size_t remaining) {
              << endl;
       set_next_behavior();
     },
-    on<baz>() >> [=](const baz& val) {
+    [=](const baz& val) {
       // prints: baz ( foo ( 1, 2 ), bar ( foo ( 3, 4 ), 5 ) )
       aout(self) << to_string(make_message(val)) << endl;
       set_next_behavior();
@@ -123,7 +123,7 @@ int main(int, char**) {
                 // compound member that has a compound member
                 compound_member(&baz::b, meta_bar_f(), &bar::i));
   // spawn a testee that receives two messages
-  auto t = spawn(testee, 2);
+  auto t = spawn(testee, size_t{2});
   {
     scoped_actor self;
     self->send(t, bar{foo{1, 2}, 3});

@@ -219,6 +219,8 @@ private:
         detail::type_list<typename detail::deduce_mpi<Ts>::type...>,
         detail::is_hidden_msg_handler
       >::type;
+    static_assert(detail::tl_is_distinct<mpi>::value,
+                  "multiple handler defintions found");
     detail::static_asserter<signatures, mpi, detail::ctm>::verify_match();
     // final (type-erasure) step
     intrusive_ptr<detail::behavior_impl> ptr = std::move(bp);
@@ -227,6 +229,12 @@ private:
 
   behavior bhvr_;
 };
+
+template <class T>
+struct is_typed_behavior : std::false_type { };
+
+template <class... Sigs>
+struct is_typed_behavior<typed_behavior<Sigs...>> : std::true_type { };
 
 } // namespace caf
 

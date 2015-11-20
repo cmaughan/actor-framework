@@ -26,10 +26,9 @@
 #include "caf/actor_cast.hpp"
 #include "caf/replies_to.hpp"
 #include "caf/abstract_actor.hpp"
+#include "caf/stateful_actor.hpp"
 #include "caf/typed_behavior.hpp"
 #include "caf/typed_response_promise.hpp"
-
-#include "caf/experimental/stateful_actor.hpp"
 
 namespace caf {
 
@@ -60,6 +59,8 @@ class typed_actor : detail::comparable<typed_actor<Sigs...>>,
                     detail::comparable<typed_actor<Sigs...>,
                                        invalid_actor_addr_t> {
  public:
+  static_assert(sizeof...(Sigs) > 0, "Empty typed actor handle");
+
   // grant access to private ctor
   friend class local_actor;
 
@@ -96,11 +97,21 @@ class typed_actor : detail::comparable<typed_actor<Sigs...>>,
 
   /// Identifies the base class for this kind of actor with actor.
   template <class State>
-  using stateful_base = experimental::stateful_actor<State, base>;
+  using stateful_base = stateful_actor<State, base>;
 
   /// Identifies the base class for this kind of actor with actor.
   template <class State>
-  using stateful_pointer = experimental::stateful_actor<State, base>*;
+  using stateful_pointer = stateful_actor<State, base>*;
+
+  /// Identifies the broker_base class for this kind of actor with actor.
+  template <class State>
+  using stateful_broker_base =
+    stateful_actor<State, broker_base>;
+
+  /// Identifies the broker_base class for this kind of actor with actor.
+  template <class State>
+  using stateful_broker_pointer =
+    stateful_actor<State, broker_base>*;
 
   typed_actor() = default;
   typed_actor(typed_actor&&) = default;
@@ -115,6 +126,17 @@ class typed_actor : detail::comparable<typed_actor<Sigs...>>,
                                       typename TypedActor::signatures())
               >::type>
   typed_actor(const TypedActor& other) : ptr_(other.ptr_) {
+    // nop
+  }
+
+  // allow `handle_type{this}` for typed actors
+  template <class TypedActor,
+            class Enable =
+              typename std::enable_if<
+                detail::tlf_is_subset(signatures(),
+                                      typename TypedActor::signatures())
+              >::type>
+  typed_actor(TypedActor* ptr) : ptr_(ptr) {
     // nop
   }
 
@@ -169,6 +191,11 @@ class typed_actor : detail::comparable<typed_actor<Sigs...>>,
     ptr_.swap(other.ptr_);
   }
 
+  /// Returns the interface definition for this actor handle.
+  static std::set<std::string> message_types() {
+    return std::set<std::string>{Sigs::static_type_name()...};
+  }
+
   /// @cond PRIVATE
 
   abstract_actor* operator->() const noexcept {
@@ -191,10 +218,6 @@ class typed_actor : detail::comparable<typed_actor<Sigs...>>,
     return ptr_ ? 1 : 0;
   }
 
-  static std::set<std::string> message_types() {
-    return {Sigs::static_type_name()...};
-  }
-
   /// @endcond
 
 private:
@@ -210,5 +233,15 @@ private:
 };
 
 } // namespace caf
+
+// allow typed_actor to be used in hash maps
+namespace std {
+template <class... Sigs>
+struct hash<caf::typed_actor<Sigs...>> {
+  size_t operator()(const caf::typed_actor<Sigs...>& ref) const {
+    return ref ? static_cast<size_t>(ref->id()) : 0;
+  }
+};
+} // namespace std
 
 #endif // CAF_TYPED_ACTOR_HPP

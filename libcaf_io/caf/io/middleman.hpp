@@ -56,9 +56,8 @@ public:
   template <class Impl>
   intrusive_ptr<Impl> get_named_broker(atom_value name) {
     auto i = named_brokers_.find(name);
-    if (i != named_brokers_.end()) {
+    if (i != named_brokers_.end())
       return static_cast<Impl*>(i->second.get());
-    }
     auto result = make_counted<Impl>(*this);
     CAF_ASSERT(result->unique());
     result->launch(nullptr, false, true);
@@ -100,6 +99,10 @@ public:
     });
   }
 
+  inline bool has_hook() const {
+    return hooks_ != nullptr;
+  }
+
   template <class F>
   void add_shutdown_cb(F fun) {
     struct impl : hook {
@@ -134,6 +137,10 @@ public:
 
   middleman(const backend_factory&);
 
+  inline size_t max_throughput() const {
+    return max_throughput_;
+  }
+
   /// @endcond
 
 private:
@@ -151,6 +158,8 @@ private:
   hook_uptr hooks_;
   // actor offering asyncronous IO by managing this singleton instance
   middleman_actor manager_;
+  // stores the max_throughput parameter from the scheduler coordinator
+  size_t max_throughput_;
 };
 
 } // namespace io

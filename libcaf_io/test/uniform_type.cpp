@@ -43,9 +43,6 @@
 #include "caf/detail/type_nr.hpp"
 #include "caf/detail/uniform_type_info_map.hpp"
 
-using std::cout;
-using std::endl;
-
 namespace {
 
 struct foo {
@@ -153,6 +150,11 @@ CAF_TEST(test_uniform_type) {
     CAF_CHECK(uti != nullptr);
     CAF_CHECK(strcmp(uti->name(), "@atom") == 0);
   }
+  auto sptr = detail::singletons::get_uniform_type_info_map();
+  // these message types are used during the initialization process of BASP;
+  // when compiling with logging enabled, this type ends up in the type info map
+  sptr->by_uniform_name("@<>+@atom+@str");
+  sptr->by_uniform_name("@<>+@atom+@str+@message");
   using detail::type_nr;
   // these types (and only those) are present if
   // the uniform_type_info implementation is correct
@@ -182,6 +184,8 @@ CAF_TEST(test_uniform_type) {
     // default announced types
     {"@<>", 0},
     {"@<>+@atom", 0},
+    {"@<>+@atom+@str", 0},
+    {"@<>+@atom+@str+@message", 0},
     {"@unit", tnr<unit_t>()},
     {"@actor", tnr<actor>()},
     {"@actorvec", tnr<std::vector<actor>>()},
@@ -205,7 +209,6 @@ CAF_TEST(test_uniform_type) {
     {"@strvec", tnr<std::vector<std::string>>()},
     {"@strset", tnr<std::set<std::string>>()}
   };
-  auto sptr = detail::singletons::get_uniform_type_info_map();
   sptr->by_uniform_name("@<>");
   sptr->by_uniform_name("@<>+@atom");
   CAF_MESSAGE("Added debug types");
@@ -222,7 +225,8 @@ CAF_TEST(test_uniform_type) {
                        "caf::io::connection_closed_msg",
                        "caf::io::network::protocol",
                        "caf::io::new_connection_msg",
-                       "caf::io::new_data_msg"));
+                       "caf::io::new_data_msg",
+                       "caf::io::network::address_listing"));
     CAF_MESSAGE("io types checked");
   }
   // check whether enums can be announced as members

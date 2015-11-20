@@ -45,6 +45,14 @@ public:
     append(first, last);
   }
 
+  /// Creates a new instance and immediately
+  /// calls `append(xs.begin(), xs.end())`.
+  template <class T>
+  message_builder(const std::vector<T>& xs) {
+    init();
+    append(xs.begin(), xs.end());
+  }
+
   /// Adds `what` to the elements of the buffer.
   message_builder& append(uniform_value what);
 
@@ -85,13 +93,13 @@ public:
 
   /// @copydoc message::extract_opts
   inline message::cli_res extract_opts(std::vector<message::cli_arg> xs,
-                                       message::help_factory f
-                                       = nullptr) const {
-    return to_message().extract_opts(std::move(xs), std::move(f));
+                                       message::help_factory f = nullptr,
+                                       bool no_help = false) const {
+    return to_message().extract_opts(std::move(xs), std::move(f), no_help);
   }
 
   /// @copydoc message::apply
-  optional<message> apply(message_handler handler);
+  maybe<message> apply(message_handler handler);
 
   /// Removes all elements from the buffer.
   void clear();

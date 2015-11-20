@@ -39,6 +39,9 @@
 #include "caf/io/middleman.hpp"
 #include "caf/io/basp_broker.hpp"
 #include "caf/io/system_messages.hpp"
+#include "caf/io/network/interfaces.hpp"
+
+#include "caf/scheduler/abstract_coordinator.hpp"
 
 #include "caf/detail/logging.hpp"
 #include "caf/detail/ripemd_160.hpp"
@@ -58,62 +61,48 @@ namespace io {
 
 namespace {
 
-template <class Subtype>
-inline void serialize_impl(const handle<Subtype>& hdl, serializer* sink) {
-  sink->write_value(hdl.id());
+void serialize(serializer& sink, std::vector<char>& buf) {
+  sink << static_cast<uint32_t>(buf.size());
+  sink.write_raw(buf.size(), buf.data());
 }
 
-template <class Subtype>
-inline void deserialize_impl(handle<Subtype>& hdl, deserializer* source) {
-  hdl.set_id(source->read<int64_t>());
+void serialize(deserializer& source, std::vector<char>& buf) {
+  auto bs = source.read<uint32_t>();
+  buf.resize(bs);
+  source.read_raw(buf.size(), buf.data());
 }
 
-inline void serialize_impl(const new_connection_msg& msg, serializer* sink) {
-  serialize_impl(msg.source, sink);
-  serialize_impl(msg.handle, sink);
+template <class Subtype, class I>
+void serialize(serializer& sink, handle<Subtype, I>& hdl) {
+  sink.write_value(hdl.id());
 }
 
-inline void deserialize_impl(new_connection_msg& msg, deserializer* source) {
-  deserialize_impl(msg.source, source);
-  deserialize_impl(msg.handle, source);
+template <class Subtype, class I>
+void serialize(deserializer& source, handle<Subtype, I>& hdl) {
+  hdl.set_id(source.read<int64_t>());
 }
 
-inline void serialize_impl(const new_data_msg& msg, serializer* sink) {
-  serialize_impl(msg.handle, sink);
-  auto buf_size = static_cast<uint32_t>(msg.buf.size());
-  if (buf_size != msg.buf.size()) { // narrowing error
-    std::ostringstream oss;
-    oss << "attempted to send more than "
-        << std::numeric_limits<uint32_t>::max() << " bytes";
-    auto errstr = oss.str();
-    CAF_LOGF_INFO(errstr);
-    throw std::ios_base::failure(std::move(errstr));
-  }
-  sink->write_value(buf_size);
-  sink->write_raw(msg.buf.size(), msg.buf.data());
+template <class Archive>
+void serialize(Archive& ar, new_connection_msg& msg) {
+  serialize(ar, msg.source);
+  serialize(ar, msg.handle);
 }
 
-inline void deserialize_impl(new_data_msg& msg, deserializer* source) {
-  deserialize_impl(msg.handle, source);
-  auto buf_size = source->read<uint32_t>();
-  msg.buf.resize(buf_size);
-  source->read_raw(msg.buf.size(), msg.buf.data());
+template <class Archive>
+void serialize(Archive& ar, new_data_msg& msg) {
+  serialize(ar, msg.handle);
+  serialize(ar, msg.buf);
 }
+
 
 // connection_closed_msg & acceptor_closed_msg have the same fields
-template <class T>
-typename std::enable_if<std::is_same<T, connection_closed_msg>::value
-                        || std::is_same<T, acceptor_closed_msg>::value>::type
-serialize_impl(const T& dm, serializer* sink) {
-  serialize_impl(dm.handle, sink);
-}
-
-// connection_closed_msg & acceptor_closed_msg have the same fields
-template <class T>
-typename std::enable_if<std::is_same<T, connection_closed_msg>::value
-                        || std::is_same<T, acceptor_closed_msg>::value>::type
-deserialize_impl(T& dm, deserializer* source) {
-  deserialize_impl(dm.handle, source);
+template <class Archive, class T>
+typename std::enable_if<
+  std::is_same<T, connection_closed_msg>::value
+  || std::is_same<T, acceptor_closed_msg>::value
+>::type
+serialize(Archive& ar, T& dm) {
+  serialize(ar, dm.handle);
 }
 
 template <class T>
@@ -126,11 +115,11 @@ public:
   }
 
   void serialize(const void* instance, serializer* sink) const {
-    serialize_impl(super::deref(instance), sink);
+    io::serialize(*sink, super::deref(const_cast<void*>(instance)));
   }
 
   void deserialize(void* instance, deserializer* source) const {
-    deserialize_impl(super::deref(instance), source);
+    io::serialize(*source, super::deref(instance));
   }
 };
 
@@ -139,94 +128,80 @@ void do_announce(const char* tname) {
   announce(typeid(T), uniform_type_info_ptr{new uti_impl<T>(tname)});
 }
 
-} // namespace <anonymous>
-
-using middleman_actor_base = middleman_actor::extend<
-                               reacts_to<ok_atom, int64_t>,
-                               reacts_to<ok_atom, int64_t, actor_addr>,
-                               reacts_to<error_atom, int64_t, std::string>
-                             >;
-
-class middleman_actor_impl : public middleman_actor_base::base {
+class middleman_actor_impl : public middleman_actor::base {
 public:
   middleman_actor_impl(middleman& mref, actor default_broker)
       : broker_(default_broker),
-        parent_(mref),
-        next_request_id_(0) {
+        parent_(mref) {
     // nop
   }
 
-  ~middleman_actor_impl();
-
-  void on_exit() {
+  void on_exit() override {
     CAF_LOG_TRACE("");
-    pending_gets_.clear();
-    pending_deletes_.clear();
     broker_ = invalid_actor;
   }
 
-  using get_op_result = either<ok_atom, actor_addr>
-                        ::or_else<error_atom, std::string>;
+  const char* name() const override {
+    return "middleman_actor";
+  }
 
-  using get_op_promise = typed_response_promise<get_op_result>;
+  using put_res = either<ok_atom, uint16_t>::or_else<error_atom, std::string>;
 
-  using del_op_result = either<ok_atom>::or_else<error_atom, std::string>;
+  using get_res = delegated<either<ok_atom, node_id, actor_addr,
+                                   std::set<std::string>>
+                            ::or_else<error_atom, std::string>>;
 
-  using del_op_promise = typed_response_promise<del_op_result>;
+  using del_res = delegated<either<ok_atom>::or_else<error_atom, std::string>>;
 
-  using map_type = std::map<int64_t, response_promise>;
-
-  middleman_actor_base::behavior_type make_behavior() {
+  behavior_type make_behavior() override {
     return {
-      [=](put_atom, const actor_addr& whom, uint16_t port,
-          const std::string& addr, bool reuse_addr) {
-        return put(whom, port, addr.c_str(), reuse_addr);
+      [=](publish_atom, uint16_t port, actor_addr& whom,
+          std::set<std::string>& sigs, std::string& addr, bool reuse) {
+        return put(port, whom, sigs, addr.c_str(), reuse);
       },
-      [=](put_atom, const actor_addr& whom, uint16_t port,
-          const std::string& addr) {
-        return put(whom, port, addr.c_str());
+      [=](open_atom, uint16_t port, std::string& addr, bool reuse) -> put_res {
+        actor_addr whom = invalid_actor_addr;
+        std::set<std::string> sigs;
+        return put(port, whom, sigs, addr.c_str(), reuse);
       },
-      [=](put_atom, const actor_addr& whom, uint16_t port, bool reuse_addr) {
-        return put(whom, port, nullptr, reuse_addr);
+      [=](connect_atom, const std::string& hostname, uint16_t port) -> get_res {
+        CAF_LOG_TRACE(CAF_ARG(hostname) << ", " << CAF_ARG(port));
+        try {
+          auto hdl = parent_.backend().new_tcp_scribe(hostname, port);
+          delegate(broker_, connect_atom::value, hdl, port);
+        }
+        catch (network_error& err) {
+          // fullfil promise immediately
+          std::string msg = "network_error: ";
+          msg += err.what();
+          auto rp = make_response_promise();
+          rp.deliver(make_message(error_atom::value, std::move(msg)));
+        }
+        return {};
       },
-      [=](put_atom, const actor_addr& whom, uint16_t port) {
-        return put(whom, port);
+      [=](unpublish_atom, const actor_addr&, uint16_t) -> del_res {
+        forward_current_message(broker_);
+        return {};
       },
-      [=](get_atom, const std::string& hostname, uint16_t port,
-          std::set<std::string>& expected_ifs) {
-        return get(hostname, port, std::move(expected_ifs));
+      [=](close_atom, uint16_t) -> del_res {
+        forward_current_message(broker_);
+        return {};
       },
-      [=](get_atom, const std::string& hostname, uint16_t port) {
-        return get(hostname, port, std::set<std::string>());
-      },
-      [=](delete_atom, const actor_addr& whom) {
-        return del(whom);
-      },
-      [=](delete_atom, const actor_addr& whom, uint16_t port) {
-        return del(whom, port);
-      },
-      [=](ok_atom, int64_t request_id) {
-        // not legal for get results
-        CAF_ASSERT(pending_gets_.count(request_id) == 0);
-        handle_ok<del_op_result>(pending_deletes_, request_id);
-      },
-      [=](ok_atom, int64_t request_id, actor_addr& result) {
-        // not legal for delete results
-        CAF_ASSERT(pending_deletes_.count(request_id) == 0);
-        handle_ok<get_op_result>(pending_gets_, request_id, std::move(result));
-      },
-      [=](error_atom, int64_t request_id, std::string& reason) {
-        handle_error(request_id, reason);
+      [=](spawn_atom, const node_id&, const std::string&, const message&)
+      -> delegated<either<ok_atom, actor_addr, std::set<std::string>>
+                   ::or_else<error_atom, std::string>> {
+        forward_current_message(broker_);
+        return {};
       }
     };
   }
 
 private:
-  either<ok_atom, uint16_t>::or_else<error_atom, std::string>
-  put(const actor_addr& whom, uint16_t port,
-      const char* in = nullptr, bool reuse_addr = false) {
-    CAF_LOG_TRACE(CAF_TSARG(whom) << ", " << CAF_ARG(port)
-                  << ", " << CAF_ARG(reuse_addr));
+  put_res put(uint16_t port, actor_addr& whom,
+              std::set<std::string>& sigs, const char* in = nullptr,
+              bool reuse_addr = false) {
+    CAF_LOG_TRACE(CAF_TSARG(whom) << ", " << CAF_ARG(port) << ", "
+                                  << CAF_ARG(reuse_addr));
     accept_handle hdl;
     uint16_t actual_port;
     try {
@@ -244,88 +219,16 @@ private:
     catch (network_error& err) {
       return {error_atom::value, std::string("network_error: ") + err.what()};
     }
-    send(broker_, put_atom::value, hdl, whom, actual_port);
+    send(broker_, publish_atom::value, hdl, actual_port,
+         std::move(whom), std::move(sigs));
     return {ok_atom::value, actual_port};
-  }
-
-  get_op_promise get(const std::string& hostname, uint16_t port,
-                     std::set<std::string> expected_ifs) {
-    CAF_LOG_TRACE(CAF_ARG(hostname) << ", " << CAF_ARG(port));
-    auto result = make_response_promise();
-    try {
-      auto hdl = parent_.backend().new_tcp_scribe(hostname, port);
-      auto req_id = next_request_id_++;
-      send(broker_, get_atom::value, hdl, req_id,
-           actor{this}, std::move(expected_ifs));
-      pending_gets_.emplace(req_id, result);
-    }
-    catch (network_error& err) {
-      // fullfil promise immediately
-      std::string msg = "network_error: ";
-      msg += err.what();
-      result.deliver(get_op_result{error_atom::value, std::move(msg)}.value);
-    }
-    return result;
-  }
-
-  del_op_promise del(const actor_addr& whom, uint16_t port = 0) {
-    CAF_LOG_TRACE(CAF_TSARG(whom) << ", " << CAF_ARG(port));
-    auto result = make_response_promise();
-    auto req_id = next_request_id_++;
-    send(broker_, delete_atom::value, req_id, whom, port);
-    pending_deletes_.emplace(req_id, result);
-    return result;
-  }
-
-  template <class T, class... Ts>
-  void handle_ok(map_type& storage, int64_t request_id, Ts&&... xs) {
-    CAF_LOG_TRACE(CAF_ARG(request_id));
-    auto i = storage.find(request_id);
-    if (i == storage.end()) {
-      CAF_LOG_ERROR("request id not found: " << request_id);
-      return;
-    }
-    i->second.deliver(T{ok_atom::value, std::forward<Ts>(xs)...}.value);
-    storage.erase(i);
-  }
-
-  template <class F>
-  bool finalize_request(map_type& storage, int64_t req_id, F fun) {
-    CAF_LOG_TRACE(CAF_ARG(req_id));
-    auto i = storage.find(req_id);
-    if (i == storage.end()) {
-      CAF_LOG_INFO("request ID not found in storage");
-      return false;
-    }
-    fun(i->second);
-    storage.erase(i);
-    return true;
-  }
-
-  void handle_error(int64_t request_id, std::string& reason) {
-    CAF_LOG_TRACE(CAF_ARG(request_id) << ", " << CAF_ARG(reason));
-    auto fget = [&](response_promise& rp) {
-      rp.deliver(get_op_result{error_atom::value, std::move(reason)}.value);
-    };
-    auto fdel = [&](response_promise& rp) {
-      rp.deliver(del_op_result{error_atom::value, std::move(reason)}.value);
-    };
-    if (! finalize_request(pending_gets_, request_id, fget)
-        && ! finalize_request(pending_deletes_, request_id, fdel)) {
-      CAF_LOG_ERROR("invalid request id: " << request_id);
-    }
   }
 
   actor broker_;
   middleman& parent_;
-  int64_t next_request_id_;
-  map_type pending_gets_;
-  map_type pending_deletes_;
 };
 
-middleman_actor_impl::~middleman_actor_impl() {
-  CAF_LOG_TRACE("");
-}
+} // namespace <anonymous>
 
 middleman* middleman::instance() {
   CAF_LOGF_TRACE("");
@@ -346,14 +249,23 @@ void middleman::add_broker(broker_ptr bptr) {
 
 void middleman::initialize() {
   CAF_LOG_TRACE("");
+  auto sc = detail::singletons::get_scheduling_coordinator();
+  max_throughput_ = sc->max_throughput();
   backend_supervisor_ = backend_->make_supervisor();
-  thread_ = std::thread{[this] {
-    CAF_LOG_TRACE("");
-    backend_->run();
-  }};
-  backend_->thread_id(thread_.get_id());
+  if (backend_supervisor_ == nullptr) {
+    // the only backend that returns a `nullptr` is the `test_multiplexer`
+    // which does not have its own thread but uses the main thread instead
+    backend_->thread_id(std::this_thread::get_id());
+  } else {
+    thread_ = std::thread{[this] {
+      CAF_LOG_TRACE("");
+      backend_->run();
+    }};
+    backend_->thread_id(thread_.get_id());
+  }
   // announce io-related types
   announce<network::protocol>("caf::io::network::protocol");
+  announce<network::address_listing>("caf::io::network::address_listing");
   do_announce<new_data_msg>("caf::io::new_data_msg");
   do_announce<new_connection_msg>("caf::io::new_connection_msg");
   do_announce<acceptor_closed_msg>("caf::io::acceptor_closed_msg");
@@ -364,8 +276,9 @@ void middleman::initialize() {
   do_announce<connection_handle>("caf::io::connection_handle");
   do_announce<new_connection_msg>("caf::io::new_connection_msg");
   do_announce<new_data_msg>("caf::io::new_data_msg");
-  actor mgr = get_named_broker<basp_broker>(atom("_BASP"));
-  manager_ = spawn_typed<middleman_actor_impl, detached + hidden>(*this, mgr);
+  actor mgr = get_named_broker<basp_broker>(atom("BASP"));
+  detail::singletons::get_actor_registry()->put_named(atom("BASP"), mgr);
+  manager_ = spawn<middleman_actor_impl, detached + hidden>(*this, mgr);
 }
 
 void middleman::stop() {
@@ -376,13 +289,16 @@ void middleman::stop() {
     // managers_ will be modified while we are stopping each manager,
     // because each manager will call remove(...)
     for (auto& kvp : named_brokers_) {
-      if (kvp.second->exit_reason() == exit_reason::not_exited) {
-        kvp.second->cleanup(exit_reason::normal);
+      auto& ptr = kvp.second;
+      if (ptr->exit_reason() == exit_reason::not_exited) {
+        ptr->planned_exit_reason(exit_reason::normal);
+        ptr->finalize();
       }
     }
   });
   backend_supervisor_.reset();
-  thread_.join();
+  if (thread_.joinable())
+    thread_.join();
   hooks_.reset();
   named_brokers_.clear();
   scoped_actor self(true);
@@ -399,7 +315,9 @@ void middleman::dispose() {
   delete this;
 }
 
-middleman::middleman(const backend_factory& factory) : backend_(factory()) {
+middleman::middleman(const backend_factory& factory)
+    : backend_(factory()),
+      max_throughput_(std::numeric_limits<size_t>::max()) {
   // nop
 }
 

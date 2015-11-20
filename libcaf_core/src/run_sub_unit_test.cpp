@@ -17,11 +17,14 @@
  * http://www.boost.org/LICENSE_1_0.txt.                                      *
  ******************************************************************************/
 
-#include "caf/detail/run_program.hpp"
+#include "caf/detail/run_sub_unit_test.hpp"
 
+#include <sstream>
 #include <iostream>
 
 #include "caf/config.hpp"
+
+#include "caf/string_algorithms.hpp"
 
 #ifdef CAF_MSVC
 # include <windows.h>
@@ -31,19 +34,31 @@ namespace caf {
 namespace detail {
 
 #ifndef CAF_WINDOWS
-std::thread run_program_impl(actor rc, const char* cpath,
-                             std::vector<std::string> args) {
+std::thread run_sub_unit_test(actor rc,
+                              const char* cpath,
+                              int max_runtime,
+                              const char* suite_name,
+                              bool set_asio_option,
+                              std::initializer_list<std::string> args) {
   using namespace std;
   string path = cpath;
   replace_all(path, "'", "\\'");
   ostringstream oss;
-  oss << "'" << path << "'";
-  for (auto& arg : args) {
+  // set path and default options for sub unit tests
+  oss << "'" << path << "' "
+      << "-n -s " << suite_name << " -r " << max_runtime << " --";
+  for (auto& arg : args)
     oss << " " << arg;
-  }
+  if (set_asio_option)
+    oss << " --use-asio";
   oss << " 2>&1";
   string cmdstr = oss.str();
   return std::thread{ [cmdstr, rc] {
+    // on FreeBSD, popen() hangs indefinitely in some cases
+#   ifdef CAF_BSD
+    system(cmdstr.c_str());
+    anon_send(rc, "");
+#   else
     string output;
     auto fp = popen(cmdstr.c_str(), "r");
     if (! fp) {
@@ -57,18 +72,26 @@ std::thread run_program_impl(actor rc, const char* cpath,
     }
     pclose(fp);
     anon_send(rc, output);
+#   endif
   }};
 }
 #else
-std::thread run_program_impl(actor rc, const char* cpath,
-                             std::vector<std::string> args) {
+std::thread run_sub_unit_test(actor rc,
+                              const char* cpath,
+                              int max_runtime,
+                              const char* suite_name,
+                              bool set_asio_option,
+                              std::initializer_list<std::string> args) {
   std::string path = cpath;
   replace_all(path, "'", "\\'");
   std::ostringstream oss;
-  oss << path;
-  for (auto& arg : args) {
+  // set path and default options for sub unit tests
+  oss << path
+      << " -n -s " << suite_name << " -r " << max_runtime << " --";
+  for (auto& arg : args)
     oss << " " << arg;
-  }
+  if (set_asio_option)
+    oss << " --use-asio";
   return std::thread([rc](std::string cmdstr) {
     STARTUPINFO si;
     PROCESS_INFORMATION pi;

@@ -17,8 +17,8 @@
  * http://www.boost.org/LICENSE_1_0.txt.                                      *
  ******************************************************************************/
 
-#ifndef CAF_UTIL_ALGORITHM_HPP
-#define CAF_UTIL_ALGORITHM_HPP
+#ifndef CAF_STRING_ALGORITHMS_HPP
+#define CAF_STRING_ALGORITHMS_HPP
 
 #include <cmath>     // fabs
 #include <string>
@@ -40,26 +40,62 @@ inline std::string is_any_of(std::string arg) {
 
 constexpr bool token_compress_on = false;
 
-void split(std::vector<std::string>& result,
-       const std::string& str,
-       const std::string& delimiters = " ",
-       bool keep_empties = true);
+template <class Container, class Delim>
+void split(Container& result, const std::string& str, const Delim& delims,
+           bool keep_all = true) {
+  size_t pos = 0;
+  size_t prev = 0;
+  while ((pos = str.find_first_of(delims, prev)) != std::string::npos) {
+    if (pos > prev) {
+      auto substr = str.substr(prev, pos - prev);
+      if (! substr.empty() || keep_all) {
+        result.push_back(std::move(substr));
+      }
+    }
+    prev = pos + 1;
+  }
+  if (prev < str.size()) {
+    result.push_back(str.substr(prev, std::string::npos));
+  }
+}
 
 template <class Iterator>
-std::string join(Iterator begin, Iterator end, const std::string& glue) {
-  bool first = true;
-  std::ostringstream oss;
-  for ( ; begin != end; ++begin) {
-    if (first) first = false;
-    else oss << glue;
-    oss << *begin;
+class iterator_range {
+public:
+  using iterator = Iterator;
+
+  iterator_range(iterator first, iterator last) : begin_(first), end_(last) {
+    // nop
   }
-  return oss.str();
-}
+
+  iterator begin() const {
+    return begin_;
+  }
+
+  iterator end() const {
+    return end_;
+  }
+
+private:
+  iterator begin_;
+  iterator end_;
+};
+
 
 template <class Container>
 std::string join(const Container& c, const std::string& glue) {
-  return join(c.begin(), c.end(), glue);
+  auto begin = c.begin();
+  auto end = c.end();
+  bool first = true;
+  std::ostringstream oss;
+  for ( ; begin != end; ++begin) {
+    if (first)
+      first = false;
+    else
+      oss << glue;
+    oss << *begin;
+  }
+  return oss.str();
 }
 
 // end of recursion
@@ -130,7 +166,7 @@ inline std::string convert_to_str(std::string value) {
 
 // string projection
 template <class T>
-caf::optional<T> spro(const std::string& str) {
+caf::maybe<T> spro(const std::string& str) {
   T value;
   std::istringstream iss(str);
   if (iss >> value) {
@@ -141,4 +177,4 @@ caf::optional<T> spro(const std::string& str) {
 
 } // namespace caf
 
-#endif // CAF_UTIL_ALGORITHM_HPP
+#endif // CAF_STRING_ALGORITHMS_HPP

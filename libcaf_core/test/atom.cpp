@@ -110,7 +110,7 @@ CAF_TEST(receive_atoms) {
   );
   atom_value x = atom("abc");
   atom_value y = abc_atom::value;
-  CAF_CHECK_EQUAL(x, y);
+  CAF_CHECK(x == y);
   auto msg = make_message(atom("abc"));
   self->send(self, msg);
   self->receive(
@@ -136,7 +136,7 @@ testee::behavior_type testee_impl(testee::pointer self) {
 
 CAF_TEST(sync_send_atom_constants) {
   scoped_actor self;
-  auto tst = spawn_typed(testee_impl);
+  auto tst = spawn(testee_impl);
   self->sync_send(tst, abc_atom::value).await(
     [](int i) {
       CAF_CHECK_EQUAL(i, 42);

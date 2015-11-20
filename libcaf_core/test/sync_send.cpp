@@ -253,7 +253,7 @@ CAF_TEST_FIXTURE_SCOPE(atom_tests, fixture)
 
 CAF_TEST(test_void_res) {
   using testee_a = typed_actor<replies_to<int, int>::with<void>>;
-  auto buddy = spawn_typed([]() -> testee_a::behavior_type {
+  auto buddy = spawn([]() -> testee_a::behavior_type {
     return [](int, int) {
       // nop
     };
@@ -365,7 +365,7 @@ CAF_TEST(sync_send) {
       [](error_atom) {
         CAF_TEST_ERROR("A didn't receive sync response");
       },
-      [&](const down_msg& dm) -> optional<skip_message_t> {
+      [&](const down_msg& dm) -> maybe<skip_message_t> {
         if (dm.reason == exit_reason::normal) {
           return skip_message();
         }
@@ -471,7 +471,7 @@ CAF_TEST(sync_send) {
     s->sync_send(serv, request_atom::value).await(
       [=](response_atom) {
         CAF_MESSAGE("received `response_atom`");
-        CAF_CHECK_EQUAL(s->current_sender(), work);
+        CAF_CHECK(s->current_sender() == work);
       },
       others >> [&] {
         CAF_TEST_ERROR("Unexpected message: "
@@ -483,7 +483,7 @@ CAF_TEST(sync_send) {
     send_as(work, serv, idle_atom::value, work);
     handle.await(
       [=](response_atom) {
-        CAF_CHECK_EQUAL(s->current_sender(), work);
+        CAF_CHECK(s->current_sender() == work);
       },
       others >> [&] {
         CAF_TEST_ERROR("Unexpected message: "

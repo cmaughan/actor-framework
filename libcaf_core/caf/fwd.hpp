@@ -29,7 +29,7 @@ template <class>
 class intrusive_ptr;
 
 template <class>
-class optional;
+class maybe;
 
 // classes
 class actor;
@@ -43,8 +43,10 @@ class resumable;
 class actor_addr;
 class actor_pool;
 class message_id;
+class serializer;
 class local_actor;
 class actor_proxy;
+class deserializer;
 class scoped_actor;
 class execution_unit;
 class abstract_actor;
@@ -54,6 +56,8 @@ class mailbox_element;
 class message_handler;
 class uniform_type_info;
 class event_based_actor;
+class binary_serializer;
+class binary_deserializer;
 class forwarding_actor_proxy;
 
 // structs
@@ -75,18 +79,21 @@ enum class atom_value : uint64_t;
 // aliases
 using actor_id = uint32_t;
 
-// intrusive pointer types
-using abstract_actor_ptr = intrusive_ptr<abstract_actor>;
-using abstract_group_ptr = intrusive_ptr<abstract_group>;
-using actor_proxy_ptr = intrusive_ptr<actor_proxy>;
-
 // functions
 template <class T, typename U>
 T actor_cast(const U&);
 
 namespace io {
-  class broker;
-  class middleman;
+
+class broker;
+class middleman;
+
+namespace basp {
+
+struct header;
+
+} // namespace basp
+
 } // namespace io
 
 namespace scheduler {

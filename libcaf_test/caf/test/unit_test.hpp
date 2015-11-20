@@ -220,6 +220,13 @@ public:
   /// @returns The path to executable set via ::path(char*) or `nullptr`.
   static char* path();
 
+  /// Returns the maximum number of seconds a test case is allowed to run.
+  static int max_runtime();
+
+  /// Sets the maximum number of seconds a test case is
+  /// allowed to run to `value`.
+  static void max_runtime(int value);
+
   /// Adds a test to the engine.
   /// @param name The name of the suite.
   /// @param ptr The test to register.
@@ -231,7 +238,6 @@ public:
   ///                 that no log file will be written.
   /// @param verbosity_console The log verbosity on the console.
   /// @param verbosity_file The log verbosity in the log file.
-  /// @param max_runtime The maximum number of seconds a test shall run.
   /// @param suites The regular expression of the tests to run.
   /// @param not_suites Whether to colorize the output.
   /// @returns `true` iff all tests succeeded.
@@ -239,7 +245,6 @@ public:
                   const std::string& log_file,
                   int verbosity_console,
                   int verbosity_file,
-                  int max_runtime,
                   const std::string& suites,
                   const std::string& not_suites,
                   const std::string& tests,
@@ -284,6 +289,7 @@ private:
   size_t check_line_ = 0;
   test* current_test_ = nullptr;
   std::map<std::string, std::vector<std::unique_ptr<test>>> suites_;
+  int max_runtime_ = 30; // 30s per default
 };
 
 namespace detail {
@@ -366,6 +372,8 @@ public:
       should_fail_(should_fail),
       value_(x) {
   }
+
+  lhs(const lhs&) = default;
 
   ~lhs() {
     if (evaluated_) {
@@ -524,20 +532,19 @@ private:
 // on the global namespace so that it can hidden via namespace-scoping
 using caf_test_case_auto_fixture = caf::test::dummy_fixture;
 
-#define CAF_TEST_PR(level, msg)                                                \
+#define CAF_TEST_PR(level, msg, colorcode)                                     \
   ::caf::test::logger::instance(). level ()                                    \
-    << ::caf::test::engine::color(::caf::test::yellow)                         \
+    << ::caf::test::engine::color(::caf::test:: colorcode )                    \
     << "  -> " << ::caf::test::engine::color(::caf::test::reset) << msg << '\n'
 
-
 #define CAF_TEST_ERROR(msg)                                                    \
-  CAF_TEST_PR(error, msg)
+  CAF_TEST_PR(info, msg, red)
 
 #define CAF_TEST_INFO(msg)                                                     \
-  CAF_TEST_PR(info, msg)
+  CAF_TEST_PR(info, msg, yellow)
 
 #define CAF_TEST_VERBOSE(msg)                                                  \
-  CAF_TEST_PR(verbose, msg)
+  CAF_TEST_PR(verbose, msg, yellow)
 
 #define CAF_PASTE_CONCAT(lhs, rhs) lhs ## rhs
 
@@ -562,7 +569,7 @@ using caf_test_case_auto_fixture = caf::test::dummy_fixture;
     ::caf::test::engine::last_check_line(__LINE__);                            \
   } while(false)
 
-#define CAF_FAIL(...)                                                          \
+#define CAF_CHECK_FAIL(...)                                                    \
    do {                                                                        \
     (void)(::caf::test::detail::expr{                                          \
              ::caf::test::engine::current_test(), __FILE__, __LINE__,          \
@@ -571,12 +578,19 @@ using caf_test_case_auto_fixture = caf::test::dummy_fixture;
     ::caf::test::engine::last_check_line(__LINE__);                            \
   } while(false)
 
+
+#define CAF_FAIL(msg)                                                          \
+  do {                                                                         \
+    CAF_TEST_ERROR(msg);                                                       \
+    throw ::caf::test::detail::require_error{"test failure"};                  \
+  } while(false)
+
 #define CAF_REQUIRE(...)                                                       \
   do {                                                                         \
     auto CAF_UNIQUE(__result) =                                                \
       ::caf::test::detail::expr{::caf::test::engine::current_test(),           \
       __FILE__, __LINE__, false, #__VA_ARGS__} ->* __VA_ARGS__;                \
-    if (! CAF_UNIQUE(__result)) {                                               \
+    if (! CAF_UNIQUE(__result)) {                                              \
       throw ::caf::test::detail::require_error{#__VA_ARGS__};                  \
     }                                                                          \
     ::caf::test::engine::last_check_file(__FILE__);                            \

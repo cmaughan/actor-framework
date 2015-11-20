@@ -115,7 +115,7 @@ template <class Socket>
 connection_handle asio_multiplexer::add_tcp_scribe(abstract_broker* self,
                                                    Socket&& sock) {
   CAF_LOG_TRACE("");
-  class impl : public abstract_broker::scribe {
+  class impl : public scribe {
   public:
     impl(abstract_broker* ptr, Socket&& s)
         : scribe(ptr, network::conn_hdl_from_socket(s)),
@@ -130,20 +130,27 @@ connection_handle asio_multiplexer::add_tcp_scribe(abstract_broker* self,
         launch();
       }
     }
-    abstract_broker::buffer_type& wr_buf() override {
+    std::vector<char>& wr_buf() override {
       return stream_.wr_buf();
     }
-    abstract_broker::buffer_type& rd_buf() override {
+    std::vector<char>& rd_buf() override {
       return stream_.rd_buf();
     }
     void stop_reading() override {
       CAF_LOG_TRACE("");
       stream_.stop_reading();
-      disconnect(false);
+      detach(false);
     }
     void flush() override {
       CAF_LOG_TRACE("");
       stream_.flush(this);
+    }
+    std::string addr() const override {
+      return
+        stream_.socket_handle().remote_endpoint().address().to_string();
+    }
+    uint16_t port() const override {
+      return stream_.socket_handle().remote_endpoint().port();
     }
     void launch() {
       CAF_LOG_TRACE("");
@@ -151,12 +158,11 @@ connection_handle asio_multiplexer::add_tcp_scribe(abstract_broker* self,
       launched_ = true;
       stream_.start(this);
     }
-
  private:
     bool launched_;
     stream<Socket> stream_;
   };
-  abstract_broker::scribe_pointer ptr = make_counted<impl>(self, std::move(sock));
+  auto ptr = make_counted<impl>(self, std::move(sock));
   self->add_scribe(ptr);
   return ptr->hdl();
 }
@@ -210,7 +216,7 @@ asio_multiplexer::add_tcp_doorman(abstract_broker* self,
                                   default_socket_acceptor&& sock) {
   CAF_LOG_TRACE("sock.fd = " << sock.native_handle());
   CAF_ASSERT(sock.native_handle() != network::invalid_native_socket);
-  class impl : public abstract_broker::doorman {
+  class impl : public doorman {
   public:
     impl(abstract_broker* ptr, default_socket_acceptor&& s,
          network::asio_multiplexer& am)
@@ -221,26 +227,30 @@ asio_multiplexer::add_tcp_doorman(abstract_broker* self,
     void new_connection() override {
       CAF_LOG_TRACE("");
       auto& am = acceptor_.backend();
-      accept_msg().handle
+      msg().handle
         = am.add_tcp_scribe(parent(), std::move(acceptor_.accepted_socket()));
-      parent()->invoke_message(invalid_actor_addr, invalid_message_id,
-                               accept_msg_);
+      invoke_mailbox_element();
     }
     void stop_reading() override {
       CAF_LOG_TRACE("");
       acceptor_.stop();
-      disconnect(false);
+      detach(false);
     }
     void launch() override {
       CAF_LOG_TRACE("");
       acceptor_.start(this);
     }
-
- private:
+    std::string addr() const override {
+      return
+        acceptor_.socket_handle().local_endpoint().address().to_string();
+    }
+    uint16_t port() const override {
+      return acceptor_.socket_handle().local_endpoint().port();
+    }
+  private:
     network::acceptor<default_socket_acceptor> acceptor_;
   };
-  abstract_broker::doorman_pointer ptr
-    = make_counted<impl>(self, std::move(sock), *this);
+  auto ptr = make_counted<impl>(self, std::move(sock), *this);
   self->add_doorman(ptr);
   return ptr->hdl();
 }

@@ -24,7 +24,7 @@
 #include <functional>
 #include <type_traits>
 
-#include "caf/optional.hpp"
+#include "caf/maybe.hpp"
 
 #include "caf/fwd.hpp"
 
@@ -266,14 +266,14 @@ public:
   static constexpr bool value = decltype(check<T>(0))::value;
 };
 
-/// Returns either `T` or `T::type` if `T` is an option.
+/// Returns either `T` or `T::type` if `T` is a `maybe`.
 template <class T>
-struct rm_optional {
+struct rm_maybe {
   using type = T;
 };
 
 template <class T>
-struct rm_optional<optional<T>> {
+struct rm_maybe<maybe<T>> {
   using type = T;
 };
 
@@ -453,14 +453,65 @@ struct type_at<0, T0, Ts...> {
 };
 
 template <class T>
-struct is_optional : std::false_type {
+struct is_maybe : std::false_type {
   // no members
 };
 
 template <class T>
-struct is_optional<optional<T>> : std::true_type {
+struct is_maybe<maybe<T>> : std::true_type {
   // no members
 };
+
+// Checks whether T has a member variable named `name`.
+template <class T, bool IsScalar = std::is_scalar<T>::value>
+class has_name {
+private:
+  // a simple struct with a member called `name`
+  struct fallback {
+    int name;
+  };
+
+  // creates an ambiguity for any `T` with the requested member
+  struct derived : T, fallback {
+    // no members
+  };
+
+  // picked for any U without requested member since `U::name` is not ambigious
+  template <class U>
+  static char fun(U*, decltype(U::name)* = nullptr);
+
+  // picked for any U with requested member since `U::name` is ambigious
+  static int fun(void*);
+
+public:
+  static constexpr bool value = sizeof(fun(static_cast<derived*>(nullptr))) > 1;
+};
+
+template <class T>
+class has_name<T, true> {
+public:
+  static constexpr bool value = false;
+};
+
+// checks whether T is serializable using a free function `serialize` taking
+// either a `caf::serializer` or `caf::deserializer` as first argument
+template <class T>
+struct is_serializable {
+private:
+  template <class U>
+  static int8_t fun(U*, decltype(serialize(std::declval<serializer&>(),
+                                         std::declval<U&>(), 0))* = nullptr,
+                  decltype(serialize(std::declval<deserializer&>(),
+                                     std::declval<U&>(), 0))* = nullptr);
+
+  static int16_t fun(...);
+
+public:
+  static constexpr bool value = sizeof(fun(static_cast<T*>(nullptr))) == 1;
+};
+
+template <class T>
+constexpr bool is_serializable<T>::value;
 
 } // namespace detail
 } // namespace caf

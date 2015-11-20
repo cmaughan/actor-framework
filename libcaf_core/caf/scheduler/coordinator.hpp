@@ -20,6 +20,8 @@
 #ifndef CAF_SCHEDULER_COORDINATOR_HPP
 #define CAF_SCHEDULER_COORDINATOR_HPP
 
+#include "caf/config.hpp"
+
 #include <thread>
 #include <limits>
 #include <memory>
@@ -41,8 +43,7 @@ public:
 
   coordinator(size_t nw = std::max(std::thread::hardware_concurrency(), 4u),
               size_t mt = std::numeric_limits<size_t>::max())
-    : super(nw),
-      max_throughput_(mt) {
+    : super(nw, mt) {
     // nop
   }
 
@@ -143,8 +144,6 @@ private:
   policy_data data_;
   // instance of our policy object
   Policy policy_;
-  // number of messages each actor is allowed to consume per resume
-  size_t max_throughput_;
 };
 
 } // namespace scheduler

@@ -17,32 +17,57 @@
  * http://www.boost.org/LICENSE_1_0.txt.                                      *
  ******************************************************************************/
 
-#ifndef CAF_DETAIL_RUN_PROGRAM_HPP
-#define CAF_DETAIL_RUN_PROGRAM_HPP
+#include "caf/io/scribe.hpp"
 
-#include "caf/send.hpp"
-#include "caf/actor.hpp"
-#include "caf/message.hpp"
-#include "caf/string_algorithms.hpp"
-
-#include <thread>
-#include <vector>
-#include <string>
+#include "caf/detail/logging.hpp"
 
 namespace caf {
+namespace io {
 
-namespace detail {
-
-std::thread run_program_impl(caf::actor, const char*, std::vector<std::string>);
-
-template <class... Ts>
-std::thread run_program(caf::actor listener, const char* path, Ts&&... args) {
-  std::vector<std::string> vec{convert_to_str(std::forward<Ts>(args))...};
-  return run_program_impl(listener, path, std::move(vec));
+scribe::scribe(abstract_broker* ptr, connection_handle conn_hdl)
+    : scribe_base(ptr, conn_hdl) {
+  // nop
 }
 
-} // namespace detail
+scribe::~scribe() {
+  CAF_LOG_TRACE("");
+}
 
+message scribe::detach_message() {
+  return make_message(connection_closed_msg{hdl()});
+}
+
+void scribe::consume(const void*, size_t num_bytes) {
+  CAF_LOG_TRACE(CAF_ARG(num_bytes));
+  if (detached()) {
+    // we are already disconnected from the broker while the multiplexer
+    // did not yet remove the socket, this can happen if an IO event causes
+    // the broker to call close_all() while the pollset contained
+    // further activities for the broker
+    return;
+  }
+  auto& buf = rd_buf();
+  CAF_ASSERT(buf.size() >= num_bytes);
+  // make sure size is correct, swap into message, and then call client
+  buf.resize(num_bytes);
+  auto& msg_buf = msg().buf;
+  msg_buf.swap(buf);
+  invoke_mailbox_element();
+  // `mailbox_elem_ptr_ == nullptr` if the broker moved it to the cache
+  if (mailbox_elem_ptr_) {
+    // swap buffer back to stream and implicitly flush wr_buf()
+    msg_buf.swap(buf);
+    flush();
+  }
+}
+
+void scribe::io_failure(network::operation op) {
+  CAF_LOG_TRACE("id = " << hdl().id()
+                << ", " << CAF_TARG(op, static_cast<int>));
+  // keep compiler happy when compiling w/o logging
+  static_cast<void>(op);
+  detach(true);
+}
+
+} // namespace io
 } // namespace caf
-
-#endif // CAF_DETAIL_RUN_PROGRAM_HPP

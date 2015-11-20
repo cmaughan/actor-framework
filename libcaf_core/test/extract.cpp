@@ -25,10 +25,15 @@
 #include <string>
 #include <vector>
 
-#include "caf/on.hpp"
-#include "caf/message.hpp"
-#include "caf/message_builder.hpp"
-#include "caf/message_handler.hpp"
+#include "caf/all.hpp"
+
+namespace caf {
+
+std::ostream& operator<<(std::ostream& out, const message& msg) {
+  return out << to_string(msg);
+}
+
+} // namespace caf
 
 using namespace caf;
 
@@ -41,7 +46,7 @@ CAF_TEST(simple_ints) {
   auto one = on(1) >> [] { };
   auto two = on(2) >> [] { };
   auto three = on(3) >> [] { };
-  auto skip_two = [](int i) -> optional<skip_message_t> {
+  auto skip_two = [](int i) -> maybe<skip_message_t> {
     if (i == 2) {
       return skip_message();
     }

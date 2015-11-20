@@ -34,7 +34,7 @@
 
 #include "caf/detail/logging.hpp"
 #include "caf/detail/singletons.hpp"
-#include "caf/detail/run_program.hpp"
+#include "caf/detail/run_sub_unit_test.hpp"
 
 #ifdef CAF_USE_ASIO
 #include "caf/io/network/asio_multiplexer.hpp"
@@ -70,10 +70,10 @@ behavior ping_behavior(local_actor* self, size_t ping_msgs) {
       if (! self->current_sender()) {
         CAF_TEST_ERROR("current_sender() invalid!");
       }
-      CAF_TEST_INFO("received {'pong', " << value << "}");
+      CAF_MESSAGE("received {'pong', " << value << "}");
       // cout << to_string(self->current_message()) << endl;
       if (++s_pongs >= ping_msgs) {
-        CAF_TEST_INFO("reached maximum, send {'EXIT', user_defined} "
+        CAF_MESSAGE("reached maximum, send {'EXIT', user_defined} "
                       << "to last sender and quit with normal reason");
         self->send_exit(self->current_sender(),
                 exit_reason::user_shutdown);
@@ -118,20 +118,28 @@ using actor_vector = vector<actor>;
 
 void reflector(event_based_actor* self) {
   self->become(others >> [=] {
-    CAF_MESSAGE("reflect and quit");
+    CAF_MESSAGE("reflect and quit; sender was: "
+                << to_string(self->current_sender()));
     self->quit();
     return self->current_message();
   });
 }
 
 void spawn5_server_impl(event_based_actor* self, actor client, group grp) {
+CAF_MESSAGE("this node: " << to_string(detail::singletons::get_node_id()));
+CAF_MESSAGE("self: " << to_string(self->address()));
   CAF_CHECK(grp != invalid_group);
-  self->spawn_in_group(grp, reflector);
-  self->spawn_in_group(grp, reflector);
+  for (int i = 0; i < 2; ++i)
+    CAF_MESSAGE("spawned local subscriber: "
+                << self->spawn_in_group(grp, reflector)->id());
   CAF_MESSAGE("send {'Spawn5'} and await {'ok', actor_vector}");
   self->sync_send(client, spawn5_atom::value, grp).then(
     [=](ok_atom, const actor_vector& vec) {
       CAF_MESSAGE("received vector with " << vec.size() << " elements");
+      auto is_remote = [](const actor& x) -> bool {
+        return x.is_remote();
+      };
+      CAF_CHECK(std::all_of(vec.begin(), vec.end(), is_remote));
       self->send(grp, "Hello reflectors!", 5.0);
       if (vec.size() != 5) {
         CAF_MESSAGE("remote client did not spawn five reflectors!");
@@ -145,6 +153,7 @@ void spawn5_server_impl(event_based_actor* self, actor client, group grp) {
       auto replies = std::make_shared<int>(0);
       self->become(
         [=](const std::string& x0, double x1) {
+          CAF_MESSAGE("answer from " << to_string(self->current_sender()));
           CAF_CHECK_EQUAL(x0, "Hello reflectors!");
           CAF_CHECK_EQUAL(x1, 5.0);
           if (++*replies == 7) {
@@ -166,14 +175,14 @@ void spawn5_server_impl(event_based_actor* self, actor client, group grp) {
                                << to_string(self->current_message()));
                 self->quit(exit_reason::user_defined);
               },
-              after(chrono::seconds(2)) >> [=] {
+              after(chrono::seconds(3)) >> [=] {
                 CAF_TEST_ERROR("did only receive " << *downs << " down messages");
                 self->quit(exit_reason::user_defined);
               }
             );
           }
         },
-        after(std::chrono::seconds(2)) >> [=] {
+        after(std::chrono::seconds(6)) >> [=] {
           CAF_TEST_ERROR("Unexpected timeout");
           self->quit(exit_reason::user_defined);
         }
@@ -193,12 +202,19 @@ void spawn5_server_impl(event_based_actor* self, actor client, group grp) {
 
 // receive seven reply messages (2 local, 5 remote)
 void spawn5_server(event_based_actor* self, actor client, bool inverted) {
+  CAF_REQUIRE(client.is_remote());
+  CAF_MESSAGE("spawn5_server, inverted: " << inverted);
   if (! inverted) {
     spawn5_server_impl(self, client, group::get("local", "foobar"));
   } else {
     CAF_MESSAGE("request group");
     self->sync_send(client, get_group_atom::value).then(
       [=](const group& remote_group) {
+        CAF_REQUIRE(self->current_sender() != invalid_actor_addr);
+        CAF_CHECK(self->current_sender()->is_remote());
+        CAF_CHECK(remote_group->is_remote());
+        CAF_MESSAGE("got group: " << to_string(remote_group)
+                    << " from " << to_string(self->current_sender()));
         spawn5_server_impl(self, client, remote_group);
       }
     );
@@ -211,7 +227,7 @@ void spawn5_client(event_based_actor* self) {
       CAF_MESSAGE("received {'GetGroup'}");
       return group::get("local", "foobar");
     },
-    [=](spawn5_atom, const group & grp)->message {
+    [=](spawn5_atom, const group& grp)->message {
       CAF_MESSAGE("received {'Spawn5'}");
       actor_vector vec;
       for (int i = 0; i < 5; ++i) {
@@ -230,7 +246,7 @@ void spawn5_client(event_based_actor* self) {
 template <class F>
 void await_down(event_based_actor* self, actor ptr, F continuation) {
   self->become(
-    [=](const down_msg& dm) -> optional<skip_message_t> {
+    [=](const down_msg& dm) -> maybe<skip_message_t> {
       if (dm.source == ptr) {
         continuation();
         return none;
@@ -464,16 +480,22 @@ void test_remote_actor(const char* path, bool run_remote, bool use_asio) {
   CAF_CHECK(serv == serv2);
   thread child;
   if (run_remote) {
-    child = detail::run_program(self, path, "-n", "-s", CAF_XSTR(CAF_SUITE),
-                                "--", "-c", port2, "-c", port1, "-g", gport,
-                                (use_asio ? "--use-asio" : ""));
+    CAF_MESSAGE("start child process");
+    child = detail::run_sub_unit_test(self,
+                                      path,
+                                      test::engine::max_runtime(),
+                                      CAF_XSTR(CAF_SUITE),
+                                      use_asio,
+                                      {"--client-port=" + std::to_string(port2),
+                                       "--client-port=" + std::to_string(port1),
+                                       "--group-port=" + std::to_string(gport)});
   } else {
     CAF_MESSAGE("please run client with: "
               << "-c " << port2 << " -c " << port1 << " -g " << gport);
   }
   self->receive(
     [&](const down_msg& dm) {
-      CAF_CHECK_EQUAL(dm.source, serv);
+      CAF_CHECK(dm.source == serv);
       CAF_CHECK_EQUAL(dm.reason, exit_reason::normal);
     }
   );
@@ -492,9 +514,9 @@ void test_remote_actor(const char* path, bool run_remote, bool use_asio) {
 
 } // namespace <anonymous>
 
-CAF_TEST(test_remote_actor) {
-  auto argv = caf::test::engine::argv();
-  auto argc = caf::test::engine::argc();
+CAF_TEST(remote_actors) {
+  auto argv = test::engine::argv();
+  auto argc = test::engine::argc();
   announce<actor_vector>("actor_vector");
   cout << "this node is: " << to_string(caf::detail::singletons::get_node_id())
        << endl;
@@ -540,13 +562,13 @@ CAF_TEST(test_remote_actor) {
     auto c = self->spawn<client, monitored>(serv);
     self->receive(
       [&](const down_msg& dm) {
-        CAF_CHECK_EQUAL(dm.source, c);
+        CAF_CHECK(dm.source == c);
         CAF_CHECK_EQUAL(dm.reason, exit_reason::normal);
       }
     );
     grp->stop();
   } else {
-    test_remote_actor(caf::test::engine::path(), true, use_asio);
+    test_remote_actor(test::engine::path(), true, use_asio);
   }
   await_all_actors_done();
   shutdown();

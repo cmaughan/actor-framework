@@ -7,6 +7,8 @@
  * - ./build/bin/broker -c localhost 4242                                     *
 \ ******************************************************************************/
 
+#include "caf/config.hpp"
+
 #ifdef WIN32
 # define _WIN32_WINNT 0x0600
 # include <Winsock2.h>
@@ -37,8 +39,8 @@ using pong_atom = atom_constant<atom("pong")>;
 using kickoff_atom = atom_constant<atom("kickoff")>;
 
 // utility function to print an exit message with custom name
-void print_on_exit(const actor& ptr, const std::string& name) {
-  ptr->attach_functor([=](uint32_t reason) {
+void print_on_exit(const actor& hdl, const std::string& name) {
+  hdl->attach_functor([=](abstract_actor* ptr, uint32_t reason) {
     aout(ptr) << name << " exited with reason " << reason << endl;
   });
 }
@@ -177,7 +179,7 @@ behavior server(broker* self, const actor& buddy) {
   };
 }
 
-optional<uint16_t> as_u16(const std::string& str) {
+maybe<uint16_t> as_u16(const std::string& str) {
   return static_cast<uint16_t>(stoul(str));
 }
 
@@ -215,7 +217,7 @@ int main(int argc, char** argv) {
     print_on_exit(server_actor, "server");
     print_on_exit(pong_actor, "pong");
   } else if (res.opts.count("client") > 0) {
-    auto ping_actor = spawn(ping, 20);
+    auto ping_actor = spawn(ping, size_t{20});
     auto io_actor = spawn_io_client(broker_impl, host, port, ping_actor);
     print_on_exit(io_actor, "protobuf_io");
     print_on_exit(ping_actor, "ping");

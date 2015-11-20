@@ -21,12 +21,15 @@
 
 #include <iostream>
 
+#include "caf/serializer.hpp"
+#include "caf/deserializer.hpp"
 #include "caf/message_handler.hpp"
 #include "caf/string_algorithms.hpp"
 
 #include "caf/detail/singletons.hpp"
 #include "caf/detail/decorated_tuple.hpp"
 #include "caf/detail/concatenated_tuple.hpp"
+#include "caf/detail/uniform_type_info_map.hpp"
 
 namespace caf {
 
@@ -41,6 +44,33 @@ message::message(const data_ptr& ptr) : vals_(ptr) {
 message& message::operator=(message&& other) {
   vals_.swap(other.vals_);
   return *this;
+}
+
+void message::serialize(serializer& sink) const {
+  // ttn can be nullptr even if tuple is not empty (in case of object_array)
+  std::string tname = empty() ? "@<>" : tuple_type_names();
+  auto uti_map = detail::singletons::get_uniform_type_info_map();
+  auto uti = uti_map->by_uniform_name(tname);
+  if (uti == nullptr) {
+    std::string err = "could not get uniform type info for \"";
+    err += tname;
+    err += "\"";
+    CAF_LOGF_ERROR(err);
+    throw std::runtime_error(err);
+  }
+  sink.begin_object(uti);
+  for (size_t i = 0; i < size(); ++i) {
+    uniform_type_info::from(uniform_name_at(i))->serialize(at(i), &sink);
+  }
+  sink.end_object();
+}
+
+void message::deserialize(deserializer& source) {
+  auto uti = source.begin_object();
+  auto uval = uti->create();
+  uti->deserialize(uval->val, &source);
+  source.end_object();
+  *this = *reinterpret_cast<message*>(uval->val);
 }
 
 void message::reset(raw_ptr new_ptr, bool add_ref) {
@@ -71,8 +101,9 @@ const char* message::uniform_name_at(size_t pos) const {
 }
 
 bool message::equals(const message& other) const {
-  CAF_ASSERT(vals_);
-  return vals_->equals(*other.vals());
+  if (empty())
+    return other.empty();
+  return other.empty() ? false : vals_->equals(*other.vals());
 }
 
 message message::drop(size_t n) const {
@@ -112,7 +143,7 @@ message message::slice(size_t pos, size_t n) const {
   return message{detail::decorated_tuple::make(vals_, std::move(mapping))};
 }
 
-optional<message> message::apply(message_handler handler) {
+maybe<message> message::apply(message_handler handler) {
   return handler(*this);
 }
 
@@ -144,7 +175,7 @@ message message::extract(message_handler handler) const {
 }
 
 message::cli_res message::extract_opts(std::vector<cli_arg> xs,
-                                       help_factory f) const {
+                                       help_factory f, bool no_help) const {
   std::string helpstr;
   auto make_error = [&](std::string err) -> cli_res {
     return {*this, std::set<std::string>{}, std::move(helpstr), std::move(err)};
@@ -161,7 +192,7 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
     return s[0] == "help"
            || std::find_if(s.begin() + 1, s.end(), has_short_help) != s.end();
   };
-  if (std::none_of(xs.begin(), xs.end(), pred)) {
+  if (! no_help && std::none_of(xs.begin(), xs.end(), pred)) {
     xs.push_back(cli_arg{"help,h,?", "print this text"});
   }
   std::map<std::string, cli_arg*> shorts;
@@ -231,7 +262,7 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
   // store any occurred error in a temporary variable returned at the end
   std::string error;
   auto res = extract({
-    [&](const std::string& arg) -> optional<skip_message_t> {
+    [&](const std::string& arg) -> maybe<skip_message_t> {
       if (arg.empty() || arg.front() != '-') {
         return skip_message();
       }
@@ -243,7 +274,7 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
              // this short opt comes with a value (no space), e.g., -x2
             if (! i->second->fun(arg.substr(2))) {
               error = "invalid value for " + i->second->name + ": " + arg;
-              return none;
+              return skip_message();
             }
             insert_opt_name(i->second);
             return none;
@@ -260,11 +291,11 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
         if (j->second->fun) {
           if (eq_pos == std::string::npos) {
             error =  "missing argument to " + arg;
-            return none;
+            return skip_message();
           }
           if (! j->second->fun(arg.substr(eq_pos + 1))) {
             error = "invalid value for " + j->second->name + ": " + arg;
-            return none;
+            return skip_message();
           }
           insert_opt_name(j->second);
           return none;
@@ -273,10 +304,10 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
         return none;
       }
       error = "unknown command line option: " + arg;
-      return none;
+      return skip_message();
     },
     [&](const std::string& arg1,
-        const std::string& arg2) -> optional<skip_message_t> {
+        const std::string& arg2) -> maybe<skip_message_t> {
       if (arg1.size() < 2 || arg1[0] != '-' || arg1[1] == '-') {
         return skip_message();
       }
@@ -291,13 +322,13 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
         CAF_ASSERT(arg1.size() == 2);
         if (! i->second->fun(arg2)) {
           error = "invalid value for option " + i->second->name + ": " + arg2;
-          return none;
+          return skip_message();
         }
         insert_opt_name(i->second);
         return none;
       }
       error = "unknown command line option: " + arg1;
-      return none;
+      return skip_message();
     }
   });
   return {res, std::move(opts), std::move(helpstr), std::move(error)};
@@ -306,6 +337,13 @@ message::cli_res message::extract_opts(std::vector<cli_arg> xs,
 message::cli_arg::cli_arg(std::string nstr, std::string tstr)
     : name(std::move(nstr)),
       text(std::move(tstr)) {
+  // nop
+}
+
+message::cli_arg::cli_arg(std::string nstr, std::string tstr, consumer f)
+    : name(std::move(nstr)),
+      text(std::move(tstr)),
+      fun(std::move(f)) {
   // nop
 }
 

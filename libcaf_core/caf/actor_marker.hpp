@@ -17,31 +17,31 @@
  * http://www.boost.org/LICENSE_1_0.txt.                                      *
  ******************************************************************************/
 
-#include <sstream>
+#ifndef CAF_ACTOR_MARKER_HPP
+#define CAF_ACTOR_MARKER_HPP
 
-#include "caf/string_algorithms.hpp"
-
-using std::string;
-using std::vector;
+#include "caf/fwd.hpp"
 
 namespace caf {
 
-void split(vector<string>& result, const string& str, const string& delims,
-           bool keep_all) {
-  size_t pos = 0;
-  size_t prev = 0;
-  while ((pos = str.find_first_of(delims, prev)) != string::npos) {
-    if (pos > prev) {
-      auto substr = str.substr(prev, pos - prev);
-      if (! substr.empty() || keep_all) {
-        result.push_back(std::move(substr));
-      }
-    }
-    prev = pos + 1;
-  }
-  if (prev < str.size()) {
-    result.push_back(str.substr(prev, string::npos));
-  }
-}
+class statically_typed_actor_base {
+  // used as marker only
+};
+
+class dynamically_typed_actor_base {
+  // used as marker only
+};
+
+template <class T>
+struct actor_marker {
+  using type = statically_typed_actor_base;
+};
+
+template <>
+struct actor_marker<behavior> {
+  using type = dynamically_typed_actor_base;
+};
 
 } // namespace caf
+
+#endif // CAF_ACTOR_MARKER_HPP

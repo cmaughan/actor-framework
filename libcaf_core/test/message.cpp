@@ -22,12 +22,21 @@
 #define CAF_SUITE message
 #include "caf/test/unit_test.hpp"
 
-#include "caf/message.hpp"
-#include "caf/message_builder.hpp"
+#include "caf/all.hpp"
 
-using std::cout;
-using std::endl;
 using namespace caf;
+
+CAF_TEST(apply) {
+  auto f1 = [] {
+    CAF_TEST_ERROR("f1 invoked!");
+  };
+  auto f2 = [](int i) {
+    CAF_CHECK_EQUAL(i, 42);
+  };
+  auto m = make_message(42);
+  m.apply(f1);
+  m.apply(f2);
+}
 
 CAF_TEST(drop) {
   auto m1 = make_message(1, 2, 3, 4, 5);
@@ -103,6 +112,24 @@ CAF_TEST(extract_opts) {
   f({"-f", "hello.txt", "-l5"});
   f({"-fhello.txt", "-l", "5"});
   f({"-l5", "-fhello.txt"});
+  CAF_MESSAGE("ensure that failed parsing doesn't consume input");
+  auto msg = make_message("-f", "42", "-b", "1337");
+  auto foo = 0;
+  auto bar = 0;
+  auto r = msg.extract_opts({
+    {"foo,f", "foo desc", foo}
+  });
+  CAF_CHECK(r.opts.count("foo") > 0);
+  CAF_CHECK(foo == 42);
+  CAF_CHECK(bar == 0);
+  CAF_CHECK(! r.error.empty()); // -b is an unknown option
+  CAF_CHECK(! r.remainder.empty() && r.remainder == make_message("-b", "1337"));
+  r = r.remainder.extract_opts({
+    {"bar,b", "bar desc", bar}
+  });
+  CAF_CHECK(r.opts.count("bar") > 0);
+  CAF_CHECK(bar == 1337);
+  CAF_CHECK(r.error.empty());
 }
 
 CAF_TEST(type_token) {

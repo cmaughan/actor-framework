@@ -34,13 +34,11 @@ class uniform_type_info;
 /// @ingroup TypeSystem
 /// Technology-independent deserialization interface.
 class deserializer {
+public:
+  explicit deserializer(actor_namespace* ns = nullptr);
 
   deserializer(const deserializer&) = delete;
   deserializer& operator=(const deserializer&) = delete;
-
-public:
-
-  deserializer(actor_namespace* ns = nullptr);
 
   virtual ~deserializer();
 
@@ -66,7 +64,14 @@ public:
   inline T read() {
     primitive_variant val{T()};
     read_value(val);
-    return std::move(get<T>(val));
+    // works around the all-to-strict boost::strict_get of boost::variant
+    using result =
+      typename std::conditional<
+        std::is_same<T, char>::value,
+        int8_t,
+        T
+      >::type;
+    return std::move(get<result>(val));
   }
 
   template <class T>
@@ -103,9 +108,36 @@ public:
     read_raw(num_bytes, storage.data());
   }
 
-private:
+protected:
   actor_namespace* namespace_;
 };
+
+/// Serializes a value to `s`.
+/// @relates serializer
+template <class T>
+typename std::enable_if<
+  detail::is_primitive<T>::value,
+  deserializer&
+>::type
+operator>>(deserializer& source, T& value) {
+  return source.read(value);
+}
+
+/// Serializes a value to `s`.
+/// @relates serializer
+template <class T>
+typename std::enable_if<
+  ! detail::is_primitive<T>::value,
+  deserializer&
+>::type
+operator>>(deserializer& source, T& value) {
+  return source.read(value, uniform_typeid<T>());
+}
+
+template <class T>
+void operator&(deserializer& source, T& value) {
+  source >> value;
+}
 
 } // namespace caf
 

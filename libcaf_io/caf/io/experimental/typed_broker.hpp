@@ -58,17 +58,17 @@ class typed_broker;
 /// Infers the appropriate base class for a functor-based typed actor
 /// from the result and the first argument of the functor.
 template <class Result, class FirstArg>
-struct infer_typed_broker_base;
+struct CAF_DEPRECATED infer_typed_broker_base;
 
 template <class... Sigs, class FirstArg>
 struct infer_typed_broker_base<typed_behavior<Sigs...>, FirstArg> {
   using type = typed_broker<Sigs...>;
-};
+} CAF_DEPRECATED;
 
 template <class... Sigs>
-struct infer_typed_broker_base<void, typed_event_based_actor<Sigs...>*> {
+struct infer_typed_broker_base<void, typed_broker<Sigs...>*> {
   using type = typed_broker<Sigs...>;
-};
+} CAF_DEPRECATED;
 
 /// A typed broker mediates between actor systems and other components in
 /// the network.
@@ -153,7 +153,8 @@ public:
   }
 
   void initialize() override {
-    this->is_initialized(true);
+    CAF_LOG_TRACE("");
+    this->init_broker();
     auto bhvr = make_behavior();
     CAF_LOG_DEBUG_IF(! bhvr, "make_behavior() did not return a behavior, "
                             << "has_behavior() = "
@@ -166,34 +167,17 @@ public:
   }
 
   template <class F, class... Ts>
-  typename infer_typed_actor_handle<
-    typename detail::get_callable_trait<F>::result_type,
-    typename detail::tl_head<
-      typename detail::get_callable_trait<F>::arg_types
-    >::type
-  >::type
+  typename infer_handle_from_fun<F>::type
   fork(F fun, connection_handle hdl, Ts&&... xs) {
-    auto i = this->scribes_.find(hdl);
-    if (i == this->scribes_.end()) {
-      CAF_LOG_ERROR("invalid handle");
-      throw std::invalid_argument("invalid handle");
-    }
-    auto sptr = i->second;
+    auto sptr = this->take(hdl);
     CAF_ASSERT(sptr->hdl() == hdl);
-    this->scribes_.erase(i);
-    using impl =
-      typename infer_typed_broker_base<
-        typename detail::get_callable_trait<F>::result_type,
-        typename detail::tl_head<
-          typename detail::get_callable_trait<F>::arg_types
-        >::type
-      >::type;
+    using impl = typename infer_handle_from_fun<F>::impl;
     static_assert(std::is_convertible<typename impl::actor_hdl,
                                       minimal_client>::value,
                   "Cannot fork: new broker misses required handlers");
     return spawn_functor_impl<no_spawn_options, impl>(
       nullptr, [&sptr](abstract_broker* forked) {
-                 sptr->set_broker(forked);
+                 sptr->set_parent(forked);
                  forked->add_scribe(sptr);
                },
       std::move(fun), hdl, std::forward<Ts>(xs)...);

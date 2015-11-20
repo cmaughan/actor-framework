@@ -39,14 +39,14 @@ namespace test {
 
 class watchdog {
 public:
-   static void start();
+   static void start(int secs);
    static void stop();
 
 private:
-  watchdog() {
-    thread_ = std::thread{[&] {
+  watchdog(int secs) {
+    thread_ = std::thread{[=] {
       auto tp =
-        std::chrono::high_resolution_clock::now() + std::chrono::seconds(30);
+        std::chrono::high_resolution_clock::now() + std::chrono::seconds(secs);
         std::unique_lock<std::mutex> guard{mtx_};
       while (! canceled_
              && cv_.wait_until(guard, tp) != std::cv_status::timeout) {
@@ -54,7 +54,8 @@ private:
       }
       if (! canceled_) {
         logger::instance().error()
-          << "WATCHDOG: unit test did finish within 10s, abort\n";
+          << "WATCHDOG: unit test did not finish within "
+          << secs << "s, abort\n";
         abort();
       }
     }};
@@ -76,8 +77,8 @@ private:
 
 namespace { watchdog* s_watchdog; }
 
-void watchdog::start() {
-  s_watchdog = new watchdog();
+void watchdog::start(int secs) {
+  s_watchdog = new watchdog(secs);
 }
 
 void watchdog::stop() {
@@ -247,12 +248,20 @@ char* engine::path() {
   return instance().path_;
 }
 
+int engine::max_runtime() {
+  return instance().max_runtime_;
+}
+
+void engine::max_runtime(int value) {
+  instance().max_runtime_ = value;
+}
+
 void engine::add(const char* cstr_name, std::unique_ptr<test> ptr) {
   std::string name = cstr_name ? cstr_name : "";
   auto& suite = instance().suites_[name];
   for (auto& x : suite) {
     if (x->name() == ptr->name()) {
-      std::cout << "duplicate test name: " << ptr->name() << '\n';
+      std::cerr << "duplicate test name: " << ptr->name() << std::endl;
       std::abort();
     }
   }
@@ -263,7 +272,6 @@ bool engine::run(bool colorize,
                  const std::string& log_file,
                  int verbosity_console,
                  int verbosity_file,
-                 int, // TODO: max runtime
                  const std::string& suites_str,
                  const std::string& not_suites_str,
                  const std::string& tests_str,
@@ -359,7 +367,7 @@ bool engine::run(bool colorize,
       log.verbose() << color(yellow) << "- " << color(reset) << t->name()
                     << '\n';
       auto start = std::chrono::high_resolution_clock::now();
-      watchdog::start();
+      watchdog::start(max_runtime());
       try {
         t->run();
       } catch (const detail::require_error&) {
@@ -411,7 +419,8 @@ bool engine::run(bool colorize,
   unsigned percent_good = 100;
   if (total_bad > 0) {
     auto tmp = (100000.0 * static_cast<double>(total_good))
-               / static_cast<double>(total_good + total_bad);
+               / static_cast<double>(total_good + total_bad
+                                     - total_bad_expected);
     percent_good = static_cast<unsigned>(tmp / 1000.0);
   }
   auto title = std::string{"summary"};
@@ -426,7 +435,7 @@ bool engine::run(bool colorize,
   if (total_bad > 0) {
     log.info() << " (" << color(green) << total_good << color(reset) << '/'
                << color(red) << total_bad << color(reset) << ")";
-    if (total_bad_expected) {
+    if (total_bad_expected > 0) {
       log.info()
         << ' ' << color(cyan) << total_bad_expected << color(reset)
         << " failures expected";
@@ -434,7 +443,8 @@ bool engine::run(bool colorize,
   }
   log.info() << '\n' << indent << "time:    " << color(yellow)
              << render(runtime) << '\n' << color(reset) << indent
-             << "success: " << (total_bad > 0 ? color(red) : color(green))
+             << "success: "
+             << (total_bad == total_bad_expected ? color(green) : color(red))
              << percent_good << "%" << color(reset) << "\n\n" << color(cyan)
              << bar << color(reset) << '\n';
   return total_bad == total_bad_expected;
@@ -492,7 +502,7 @@ int main(int argc, char** argv) {
   // default values.
   int verbosity_console = 3;
   int verbosity_file = 3;
-  int max_runtime = 10;
+  int max_runtime = 0;
   std::string log_file;
   std::string suites = ".*";
   std::string not_suites;
@@ -541,14 +551,15 @@ int main(int argc, char** argv) {
     return 1;
   }
   auto colorize = res.opts.count("no-colors") == 0;
-  if (divider < argc) {
+  if (divider < argc)
     engine::args(argc - divider - 1, argv + divider + 1);
-  } else {
+  else
     engine::args(0, argv);
-  }
+  if (res.opts.count("max-runtime") > 0)
+    engine::max_runtime(max_runtime);
   auto result = engine::run(colorize, log_file, verbosity_console,
-                                  verbosity_file, max_runtime, suites,
-                                  not_suites, tests, not_tests);
+                            verbosity_file, suites,
+                            not_suites, tests, not_tests);
   return result ? 0 : 1;
 }
 
@@ -573,7 +584,8 @@ int main(int argc, char** argv) {
   try {
     return caf::test::main(argc, argv);
   } catch (std::exception& e) {
-    std::cerr << "exception: " << e.what() << std::endl;
+    std::cerr << "exception " << typeid(e).name() << ": "
+              << e.what() << std::endl;
   }
   return 1;
 }

@@ -36,11 +36,33 @@ actor_namespace::backend::~backend() {
   // nop
 }
 
+actor_namespace::proxy_entry::proxy_entry() {
+  // nop
+}
+
+actor_namespace::proxy_entry::proxy_entry(actor_proxy::anchor_ptr ptr)
+    : ptr_(std::move(ptr)) {
+  // nop
+}
+
+actor_namespace::proxy_entry::~proxy_entry() {
+  reset(exit_reason::remote_link_unreachable);
+}
+
+void actor_namespace::proxy_entry::reset(uint32_t rsn) {
+  if (! ptr_)
+    return;
+  auto ptr = ptr_->get();
+  ptr_.reset();
+  if (ptr)
+    ptr->kill_proxy(rsn);
+}
+
 actor_namespace::actor_namespace(backend& be) : backend_(be) {
   // nop
 }
 
-void actor_namespace::write(serializer* sink, const actor_addr& addr) {
+void actor_namespace::write(serializer* sink, const actor_addr& addr) const {
   CAF_ASSERT(sink != nullptr);
   if (! addr) {
     node_id::host_id_type zero;
@@ -91,9 +113,10 @@ std::vector<actor_proxy_ptr> actor_namespace::get_all() const {
   std::vector<actor_proxy_ptr> result;
   for (auto& outer : proxies_) {
     for (auto& inner : outer.second) {
-      auto ptr = inner.second->get();
-      if (ptr) {
-        result.push_back(std::move(ptr));
+      if (inner.second) {
+        auto ptr = inner.second->get();
+        if (ptr)
+          result.push_back(std::move(ptr));
       }
     }
   }
@@ -108,9 +131,11 @@ actor_namespace::get_all(const key_type& node) const {
     return result;
   auto& submap = i->second;
   for (auto& kvp : submap) {
-    auto ptr = kvp.second->get();
-    if (ptr)
-      result.push_back(std::move(ptr));
+    if (kvp.second) {
+      auto ptr = kvp.second->get();
+      if (ptr)
+        result.push_back(std::move(ptr));
+    }
   }
   return result;
 }
@@ -140,7 +165,9 @@ actor_proxy_ptr actor_namespace::get_or_put(const key_type& node,
   // or if we've found an expired one in the map
   if (! anchor || ! result) {
     result = backend_.make_proxy(node, aid);
-    anchor = result->get_anchor();
+    if (result) {
+      anchor = result->get_anchor();
+    }
   }
   return result;
 }
@@ -154,14 +181,18 @@ void actor_namespace::erase(const key_type& inf) {
   proxies_.erase(inf);
 }
 
-void actor_namespace::erase(const key_type& inf, actor_id aid) {
+void actor_namespace::erase(const key_type& inf, actor_id aid, uint32_t rsn) {
   CAF_LOG_TRACE(CAF_TARG(inf, to_string) << ", " << CAF_ARG(aid));
   auto i = proxies_.find(inf);
   if (i != proxies_.end()) {
-    i->second.erase(aid);
-    if (i->second.empty()) {
+    auto& submap = i->second;
+    auto j = submap.find(aid);
+    if (j == submap.end())
+      return;
+    j->second.reset(rsn);
+    submap.erase(j);
+    if (submap.empty())
       proxies_.erase(i);
-    }
   }
 }
 
