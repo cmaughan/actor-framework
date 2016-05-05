@@ -61,7 +61,7 @@ std::string get_root_uuid() {
 } // namespace detail
 } // namespace caf
 
-#elif defined(CAF_LINUX) || defined(CAF_BSD)
+#elif true //defined(CAF_LINUX) || defined(CAF_BSD)
 
 #include <vector>
 #include <string>
